@@ -30,7 +30,6 @@ pub fn load_or_create(data: &Path, names: &[String]) -> Result<Arc<ServerConfig>
     match build(&paths) {
         Ok(cfg) => Ok(cfg),
         Err(e) => {
-
             crate::warn(&format!(
                 "the stored TLS certificate is unusable ({e}); generating a fresh self-signed one"
             ));
@@ -137,7 +136,6 @@ mod tests {
 
     #[test]
     fn reuses_the_stored_certificate_across_restarts() {
-
         let dir = tmpdir("reuse");
         load_or_create(&dir, &[]).unwrap();
         let first = std::fs::read(dir.join("tls/cert.pem")).unwrap();
@@ -149,7 +147,6 @@ mod tests {
 
     #[test]
     fn a_corrupt_certificate_is_regenerated_rather_than_fatal() {
-
         let dir = tmpdir("corrupt");
         load_or_create(&dir, &[]).unwrap();
         std::fs::write(dir.join("tls/cert.pem"), b"this is not a certificate").unwrap();

@@ -14,14 +14,12 @@ const MAX_SESSIONS: usize = 64;
 const FAIL_BEFORE_DELAY: u32 = 3;
 
 pub struct Auth {
-
     password_hash: Option<String>,
     inner: Mutex<Inner>,
 }
 
 #[derive(Default)]
 struct Inner {
-
     nonces: HashMap<String, Instant>,
 
     sessions: HashMap<String, Instant>,
@@ -31,7 +29,6 @@ struct Inner {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LoginError {
-
     BadNonce,
 
     BadProof,
@@ -112,7 +109,6 @@ impl Auth {
     }
 
     pub fn verify(&self, token: &str) -> bool {
-
         if self.password_hash.is_none() {
             return true;
         }
@@ -153,7 +149,6 @@ impl Inner {
 
     fn failed_too_often(&self, from: &str) -> bool {
         match self.failures.get(from) {
-
             Some((n, at)) if *n > FAIL_BEFORE_DELAY => {
                 let wait = Duration::from_secs((*n - FAIL_BEFORE_DELAY).min(30) as u64);
                 at.elapsed() < wait
@@ -181,7 +176,6 @@ pub fn sha256_hex(data: &[u8]) -> String {
 fn random_hex() -> String {
     let mut b = [0u8; 32];
     if getrandom::getrandom(&mut b).is_err() {
-
         return String::new();
     }
     hex::encode(b)
@@ -212,7 +206,6 @@ mod tests {
 
     #[test]
     fn the_documented_proof_formula_is_what_the_server_expects() {
-
         let a = auth();
         let (nonce, _) = a.challenge();
         assert_eq!(a.expected_proof(&nonce), client_proof(&nonce, "admin"));
@@ -241,7 +234,6 @@ mod tests {
 
     #[test]
     fn a_nonce_is_consumed_even_by_a_failed_attempt() {
-
         let a = auth();
         let (nonce, _) = a.challenge();
         assert_eq!(
@@ -297,7 +289,6 @@ mod tests {
 
     #[test]
     fn an_empty_password_disables_authentication_entirely() {
-
         let a = Auth::new("");
         assert!(!a.required());
         assert!(a.verify(""), "no token at all must pass");
@@ -312,7 +303,6 @@ mod tests {
 
     #[test]
     fn a_session_never_expires_on_its_own() {
-
         let a = auth();
         let (nonce, ttl) = a.challenge();
         let (token, session_ttl) = a
@@ -328,7 +318,6 @@ mod tests {
 
     #[test]
     fn the_session_table_still_has_a_ceiling() {
-
         let a = auth();
         let mut tokens = Vec::new();
         for _ in 0..(MAX_SESSIONS + 5) {
@@ -395,7 +384,6 @@ mod tests {
 
     #[test]
     fn issuing_many_challenges_does_not_grow_without_bound() {
-
         let a = auth();
         for _ in 0..(MAX_NONCES * 2) {
             a.challenge();

@@ -41,7 +41,6 @@ pub fn json(status: u16, value: &serde_json::Value) -> Reply {
                 "Content-Type".into(),
                 "application/json; charset=utf-8".into(),
             ),
-
             ("Cache-Control".into(), "no-store".into()),
         ],
         body: serde_json::to_vec(value).unwrap_or_else(|_| b"{}".to_vec()),
@@ -61,7 +60,6 @@ pub fn html(body: Vec<u8>, gzipped: bool, etag: &str) -> Reply {
         status: 200,
         headers: vec![
             ("Content-Type".into(), "text/html; charset=utf-8".into()),
-
             ("Cache-Control".into(), "no-cache".into()),
             ("ETag".into(), etag.into()),
         ],
@@ -102,7 +100,6 @@ pub fn bytes(body: Vec<u8>, content_type: &str, filename: Option<&str>) -> Reply
         body,
     };
     if let Some(name) = filename {
-
         r.headers.push((
             "Content-Disposition".into(),
             format!(
@@ -157,7 +154,6 @@ mod tests {
 
     #[test]
     fn a_json_reply_has_a_content_length_matching_its_body() {
-
         let r = ok(&serde_json::json!({"total": 3}));
         let raw = r.to_bytes();
         let text = String::from_utf8_lossy(&raw);
@@ -210,7 +206,6 @@ mod tests {
 
     #[test]
     fn every_reply_carries_the_hardening_headers() {
-
         for r in [ok(&serde_json::json!({})), error(500, "x"), redirect("/x")] {
             let t = text_of(&r);
             assert!(t.contains("X-Frame-Options: DENY"), "{t}");
@@ -220,7 +215,6 @@ mod tests {
 
     #[test]
     fn list_responses_are_never_cached() {
-
         assert!(text_of(&ok(&serde_json::json!([]))).contains("Cache-Control: no-store"));
     }
 
@@ -252,7 +246,6 @@ mod tests {
 
     #[test]
     fn a_filename_cannot_inject_extra_headers() {
-
         let r = bytes(b"x".to_vec(), "text/plain", Some("evil\r\nX-Injected: yes"));
         let t = text_of(&r);
         assert!(!t.contains("X-Injected: yes\r\n"), "{t}");

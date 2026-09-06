@@ -24,7 +24,6 @@ pub enum StoreError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Retention {
-
     pub max_entries: usize,
 
     pub max_days: u32,
@@ -32,7 +31,6 @@ pub struct Retention {
 
 impl Default for Retention {
     fn default() -> Self {
-
         Self {
             max_entries: 5000,
             max_days: 0,
@@ -41,7 +39,6 @@ impl Default for Retention {
 }
 
 pub struct NewMessage {
-
     pub received_at: i64,
 
     pub envelope_from: String,
@@ -104,7 +101,6 @@ struct Inner {
 }
 
 impl Store {
-
     pub fn open(dir: &Path, retention: Retention) -> Result<Self, StoreError> {
         let segs = seg::Segments::open(dir)?;
 
@@ -394,7 +390,6 @@ impl Store {
 }
 
 impl Inner {
-
     fn enforce(&mut self) -> Result<(), StoreError> {
         let mut evicted = false;
 
@@ -412,7 +407,6 @@ impl Inner {
         }
 
         if evicted {
-
             let floor = self.index.front().map(|m| m.id).unwrap_or(self.next_id);
             self.floor = floor;
             self.segs.append_meta(&MetaLine::Floor { id: floor })?;
@@ -431,7 +425,6 @@ impl Inner {
             .filter(|n| !referenced.contains(n))
             .collect();
         for n in orphans {
-
             self.segs.drop_segment(n)?;
         }
         Ok(())
@@ -549,7 +542,6 @@ mod tests {
 
     #[test]
     fn survives_a_restart() {
-
         let dir = tmpdir("restart");
         {
             let s = open(&dir, 100);
@@ -596,7 +588,6 @@ mod tests {
 
     #[test]
     fn paging_reports_the_unpaged_total() {
-
         let dir = tmpdir("page");
         let s = open(&dir, 100);
         for i in 0..30 {
@@ -616,7 +607,6 @@ mod tests {
 
     #[test]
     fn body_search_reads_disk_and_finds_text_not_in_the_preview() {
-
         let dir = tmpdir("bodysearch");
         let s = open(&dir, 100);
         let long = format!("{}NEEDLE_AT_THE_END", "x ".repeat(400));
@@ -636,7 +626,6 @@ mod tests {
 
     #[test]
     fn body_search_also_looks_inside_html() {
-
         let dir = tmpdir("htmlsearch");
         let s = open(&dir, 100);
         let mut m = msg(1000, "a@x.com", "s", "plain summary");
@@ -655,7 +644,6 @@ mod tests {
 
     #[test]
     fn retention_evicts_oldest_and_survives_restart() {
-
         let dir = tmpdir("retention");
         {
             let s = open(&dir, 10);
@@ -680,7 +668,6 @@ mod tests {
 
     #[test]
     fn lowering_the_retention_limit_takes_effect_immediately() {
-
         let dir = tmpdir("lower");
         let s = open(&dir, 100);
         for i in 0..50 {
@@ -713,7 +700,6 @@ mod tests {
 
     #[test]
     fn evicting_everything_frees_the_disk() {
-
         let dir = tmpdir("reclaim");
         let s = open(&dir, 100_000);
         for i in 0..(seg::MAX_RECORDS as i64 * 2 + 10) {
@@ -772,7 +758,6 @@ mod tests {
 
     #[test]
     fn regrouping_is_persisted() {
-
         let dir = tmpdir("group");
         {
             let s = open(&dir, 100);
@@ -787,7 +772,6 @@ mod tests {
 
     #[test]
     fn falls_back_to_the_envelope_sender_when_the_from_header_is_missing() {
-
         let dir = tmpdir("envelope");
         let s = open(&dir, 100);
         let mut m = msg(1000, "unused@x.com", "s", "b");
@@ -898,7 +882,6 @@ mod tests {
 
     #[test]
     fn metadata_only_attachments_leave_no_att_file() {
-
         let dir = tmpdir("attoff");
         let s = open(&dir, 100);
         let mut m = msg(1000, "a@x.com", "s", "b");

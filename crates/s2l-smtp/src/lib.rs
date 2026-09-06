@@ -42,7 +42,6 @@ pub struct Delivered {
 
 #[derive(Debug, Clone)]
 pub enum AuthPolicy {
-
     AcceptAny,
 
     Require { user: String, pass: String },
@@ -50,7 +49,6 @@ pub enum AuthPolicy {
 
 #[derive(Clone)]
 pub struct Config {
-
     pub bind: Vec<SocketAddr>,
 
     pub tls_bind: Vec<SocketAddr>,
@@ -66,7 +64,6 @@ pub struct Config {
 }
 
 impl Config {
-
     pub fn new(sink: mpsc::Sender<Delivered>) -> Self {
         Self {
             bind: Vec::new(),
@@ -129,14 +126,12 @@ fn spawn_accept_loop(
             let (sock, peer) = match listener.accept().await {
                 Ok(v) => v,
                 Err(e) => {
-
                     warn(&format!("accept failed: {e}"));
                     tokio::time::sleep(Duration::from_millis(200)).await;
                     continue;
                 }
             };
             let Ok(permit) = limit.clone().try_acquire_owned() else {
-
                 let mut sock = sock;
                 let _ = tokio::io::AsyncWriteExt::write_all(
                     &mut sock,
@@ -149,7 +144,6 @@ fn spawn_accept_loop(
             tokio::spawn(async move {
                 let _permit = permit;
                 if let Err(e) = handle(sock, peer, &cfg, implicit_tls).await {
-
                     let _ = e;
                 }
             });
@@ -163,7 +157,6 @@ async fn handle(
     cfg: &Config,
     implicit_tls: bool,
 ) -> std::io::Result<()> {
-
     let _ = sock.set_nodelay(true);
 
     if implicit_tls {
@@ -202,7 +195,6 @@ pub fn load_tls(data: &Path, names: &[String]) -> Result<Arc<rustls::ServerConfi
 }
 
 pub fn install_crypto_provider() {
-
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 

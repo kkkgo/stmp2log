@@ -3,7 +3,6 @@ use crate::charset;
 
 pub fn decode(value: &[u8]) -> String {
     if !value.windows(2).any(|w| w == b"=?") {
-
         return charset::sniff(value);
     }
 
@@ -17,7 +16,6 @@ pub fn decode(value: &[u8]) -> String {
     while i < bytes.len() {
         if bytes[i] == b'=' && bytes.get(i + 1) == Some(&b'?') {
             if let Some((text, consumed)) = parse_word(&bytes[i..]) {
-
                 if let Some(gap) = pending_gap.take() {
                     if !last_was_word {
                         out.push_str(&gap);
@@ -37,7 +35,6 @@ pub fn decode(value: &[u8]) -> String {
         }
         let chunk = charset::sniff(&bytes[chunk_start..i]);
         if chunk.trim().is_empty() && i < bytes.len() {
-
             pending_gap = Some(match pending_gap.take() {
                 Some(prev) => prev + &chunk,
                 None => chunk,
@@ -51,7 +48,6 @@ pub fn decode(value: &[u8]) -> String {
         }
     }
     if let Some(gap) = pending_gap {
-
         if !last_was_word {
             out.push_str(&gap);
         }
@@ -121,7 +117,6 @@ mod tests {
 
     #[test]
     fn decodes_base64_gbk_word() {
-
         assert_eq!(decode(b"=?GB2312?B?zsK2yLjmvq8=?="), "温度告警");
     }
 
@@ -137,7 +132,6 @@ mod tests {
 
     #[test]
     fn whitespace_between_adjacent_words_is_dropped() {
-
         assert_eq!(
             decode(b"=?UTF-8?B?5rip5bqm?= =?UTF-8?B?5ZGK6K2m?="),
             "温度告警"
@@ -152,20 +146,17 @@ mod tests {
 
     #[test]
     fn tolerates_missing_base64_padding() {
-
         assert_eq!(decode(b"=?UTF-8?B?aGVsbG8?="), "hello");
     }
 
     #[test]
     fn a_malformed_word_is_left_as_text() {
-
         assert_eq!(decode(b"=?UTF-8?X?whatever?="), "=?UTF-8?X?whatever?=");
         assert_eq!(decode(b"=?truncated"), "=?truncated");
     }
 
     #[test]
     fn bare_gbk_header_without_encoded_word() {
-
         assert_eq!(decode(&[0xCE, 0xC2, 0xB6, 0xC8]), "温度");
     }
 

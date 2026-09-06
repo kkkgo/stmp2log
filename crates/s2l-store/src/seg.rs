@@ -114,7 +114,6 @@ impl Segments {
         f.seek(SeekFrom::Start(loc.off))?;
         let mut buf = vec![0u8; loc.len as usize];
         if f.read_exact(&mut buf).is_err() {
-
             return Ok(None);
         }
         Ok(serde_json::from_slice(&buf).ok())
@@ -151,7 +150,6 @@ impl Segments {
             let path = self.att_path(self.cur.as_ref().expect("ensure_open just set it").num);
             let seg = self.cur.as_mut().expect("ensure_open just set it");
             if seg.att.is_none() {
-
                 let f = OpenOptions::new().create(true).append(true).open(path)?;
                 seg.att_len = f.metadata()?.len();
                 seg.att = Some(BufWriter::new(f));
@@ -198,7 +196,6 @@ impl Segments {
 
     pub fn drop_segment(&mut self, n: u32) -> Result<(), StoreError> {
         if self.cur.as_ref().is_some_and(|c| c.num == n) {
-
             return Ok(());
         }
         let _ = fs::remove_file(self.meta_path(n));
@@ -227,7 +224,6 @@ impl Segments {
         }
 
         let num = match self.nums.last() {
-
             Some(&last) if self.cur.is_none() => last,
             Some(&last) => last + 1,
             None => 1,
@@ -261,7 +257,6 @@ impl Segments {
         });
 
         if full {
-
             return self.ensure_open(incoming);
         }
         Ok(())
@@ -308,7 +303,6 @@ mod tests {
 
     #[test]
     fn locations_stay_valid_across_reopen() {
-
         let dir = tmp();
         let mut locs = Vec::new();
         {
@@ -334,7 +328,6 @@ mod tests {
 
     #[test]
     fn reopening_continues_the_last_segment_instead_of_starting_a_new_one() {
-
         let dir = tmp();
         for _ in 0..4 {
             let mut s = Segments::open(&dir).unwrap();
@@ -368,7 +361,6 @@ mod tests {
 
     #[test]
     fn a_truncated_last_line_does_not_lose_the_rest() {
-
         let dir = tmp();
         {
             let mut s = Segments::open(&dir).unwrap();
@@ -427,7 +419,6 @@ mod tests {
 
     #[test]
     fn the_segment_being_written_is_never_dropped() {
-
         let dir = tmp();
         let mut s = Segments::open(&dir).unwrap();
         let loc = s
@@ -441,7 +432,6 @@ mod tests {
 
     #[test]
     fn reading_a_missing_segment_is_not_an_error() {
-
         let dir = tmp();
         let s = Segments::open(&dir).unwrap();
         assert!(s.read_meta(42).unwrap().is_empty());

@@ -66,7 +66,6 @@ mod tests {
 
     #[test]
     fn quoted_labels_are_unwrapped() {
-
         assert_eq!(lookup("\"GBK\""), Some(encoding_rs::GBK));
     }
 
@@ -82,7 +81,6 @@ mod tests {
 
     #[test]
     fn sniff_falls_back_to_gbk_for_high_bytes() {
-
         assert_eq!(sniff(GBK_ALERT), "温度告警");
     }
 
@@ -93,7 +91,6 @@ mod tests {
 
     #[test]
     fn bad_bytes_degrade_instead_of_failing() {
-
         let s = decode(b"ok\xffok", Some("utf-8"));
         assert!(s.contains("ok"), "the readable part must survive: {s:?}");
     }

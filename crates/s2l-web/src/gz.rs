@@ -1,12 +1,5 @@
 // Copyright (c) 2026, https://blog.03k.org. All rights reserved.
-const HEADER: [u8; 10] = [
-    0x1f, 0x8b,
-    0x08,
-    0x00,
-    0x00, 0x00, 0x00, 0x00,
-    0x00,
-    0xff,
-];
+const HEADER: [u8; 10] = [0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff];
 
 pub fn crc32(data: &[u8]) -> u32 {
     let mut crc = !0u32;
@@ -41,12 +34,10 @@ pub fn decompress(gz: &[u8]) -> Option<Vec<u8>> {
     let flg = gz[3];
     let mut p = 10usize;
     if flg & 0x04 != 0 {
-
         let xlen = u16::from_le_bytes([*gz.get(p)?, *gz.get(p + 1)?]) as usize;
         p += 2 + xlen;
     }
     for bit in [0x08u8, 0x10] {
-
         if flg & bit != 0 {
             p += gz.get(p..)?.iter().position(|&b| b == 0)? + 1;
         }
@@ -71,7 +62,6 @@ mod tests {
 
     #[test]
     fn crc32_matches_known_vectors() {
-
         assert_eq!(crc32(b""), 0x0000_0000);
         assert_eq!(crc32(b"a"), 0xe8b7_be43);
         assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
@@ -115,7 +105,6 @@ mod tests {
 
     #[test]
     fn output_is_deterministic() {
-
         assert_eq!(compress(b"same input"), compress(b"same input"));
     }
 }

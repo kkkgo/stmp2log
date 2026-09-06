@@ -83,7 +83,6 @@ pub async fn deliver(client: &Client, ch: &Channel, p: &Payload, attempts: usize
 }
 
 fn is_retryable_status(status: u16) -> bool {
-
     status == 0 || status == 429 || (500..600).contains(&status)
 }
 
@@ -109,7 +108,6 @@ mod tests {
 
     #[test]
     fn only_transient_failures_are_retried() {
-
         assert!(is_retryable_status(0), "no response at all is transient");
         assert!(is_retryable_status(429), "rate limiting is transient");
         assert!(is_retryable_status(500));
@@ -138,7 +136,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_bad_url_fails_immediately_without_retrying() {
-
         let client = Client::new(Duration::from_secs(2));
         let ch = Channel::Feishu {
             webhook: "open.feishu.cn/missing-scheme".into(),
@@ -152,7 +149,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_connection_failure_is_reported_not_panicked() {
-
         let client = Client::new(Duration::from_millis(1500));
         let ch = Channel::Ntfy {
             server: "http://127.0.0.1:9".into(),

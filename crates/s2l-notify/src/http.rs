@@ -82,7 +82,6 @@ impl Client {
         let headers = req.headers.to_vec();
 
         for _ in 0..=MAX_REDIRECTS {
-
             let (resp, location) = {
                 let cur = Request {
                     method: &method,
@@ -97,7 +96,6 @@ impl Client {
                 return Ok(resp);
             };
             match resp.status {
-
                 301..=303 => {
                     method = "GET".into();
                     body = None;
@@ -314,7 +312,6 @@ impl Url {
         };
 
         let (host, port) = match authority.rsplit_once(':') {
-
             Some((h, p)) if !h.contains(':') || h.ends_with(']') => (h, p.parse().ok()?),
             _ => (authority, if https { 443 } else { 80 }),
         };
@@ -374,7 +371,6 @@ mod tests {
 
     #[test]
     fn rejects_urls_without_a_scheme() {
-
         assert!(Url::parse("ntfy.sh/topic").is_none());
         assert!(Url::parse("https://").is_none());
         assert!(Url::parse("").is_none());
@@ -410,7 +406,6 @@ mod tests {
 
     #[test]
     fn a_non_json_error_page_does_not_panic() {
-
         let raw = b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 22\r\n\r\n<html>bad gateway</html>";
         let (r, _) = parse_response(raw).unwrap();
         assert_eq!(r.status, 502);

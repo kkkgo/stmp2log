@@ -81,7 +81,6 @@ mod tests {
 
     #[test]
     fn dingtalk_and_feishu_do_not_produce_the_same_thing() {
-
         let (ts, secret) = (1_788_353_161, "same-secret");
         assert_ne!(
             dingtalk(ts, secret),
@@ -131,7 +130,6 @@ mod tests {
 
     #[test]
     fn rfc3986_encodes_the_characters_that_break_aliyun() {
-
         assert_eq!(rfc3986(" "), "%20");
         assert_eq!(rfc3986("!"), "%21");
         assert_eq!(rfc3986("*"), "%2A");
@@ -155,7 +153,6 @@ mod tests {
 
     #[test]
     fn dingtalk_sign_is_url_encoded_before_going_into_the_query_string() {
-
         let sig = dingtalk(1_788_353_161_000, "SECabc123");
         assert_eq!(
             urlencode(&sig),

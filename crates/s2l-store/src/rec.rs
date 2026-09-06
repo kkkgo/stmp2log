@@ -6,7 +6,6 @@ pub const PREVIEW_CHARS: usize = 160;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t")]
 pub enum MetaLine {
-
     #[serde(rename = "m")]
     Msg(Box<MetaRec>),
 
@@ -113,7 +112,6 @@ mod tests {
 
     #[test]
     fn preview_truncates_on_char_boundaries() {
-
         let long = "温".repeat(PREVIEW_CHARS + 40);
         let p = preview_of(&long);
         assert_eq!(
@@ -133,7 +131,6 @@ mod tests {
 
     #[test]
     fn meta_lines_round_trip_and_stay_distinguishable() {
-
         let del = serde_json::to_string(&MetaLine::Del { id: 7 }).unwrap();
         assert_eq!(del, r#"{"t":"d","id":7}"#);
         let floor = serde_json::to_string(&MetaLine::Floor { id: 9 }).unwrap();
@@ -150,7 +147,6 @@ mod tests {
 
     #[test]
     fn optional_meta_fields_are_omitted_when_empty() {
-
         let rec = MetaRec {
             id: 1,
             ts: 1788353161000,
@@ -192,7 +188,6 @@ mod tests {
 
     #[test]
     fn unknown_future_fields_do_not_break_loading() {
-
         let line = r#"{"t":"d","id":3,"future_field":"whatever"}"#;
         assert!(matches!(
             serde_json::from_str::<MetaLine>(line).unwrap(),

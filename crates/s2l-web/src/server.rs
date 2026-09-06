@@ -25,7 +25,6 @@ pub async fn serve(cfg: Arc<ServerConfig>) -> std::io::Result<()> {
             let (sock, peer) = match listener.accept().await {
                 Ok(v) => v,
                 Err(e) => {
-
                     eprintln!("[web] WARN accept failed: {e}");
                     tokio::time::sleep(Duration::from_millis(200)).await;
                     continue;
@@ -59,7 +58,6 @@ async fn handle(
     let route = router::classify(&cfg.base, &head.path);
 
     if matches!(route, Route::Events) {
-
         let ok = authorized(&cfg, &head)
             || query_param(&head.query, "token").is_some_and(|t| cfg.auth.load().verify(&t));
         if !ok {
@@ -86,7 +84,6 @@ async fn dispatch(route: Route, head: &Head, peer: SocketAddr, cfg: &ServerConfi
             }
         }
         Route::Api(path) => {
-
             let public = path == "auth/challenge" || path == "auth/login" || path == "push";
             if !public && !authorized(cfg, head) {
                 return respond::error(401, "unauthorized");
@@ -133,7 +130,6 @@ async fn stream_events(mut sock: TcpStream, cfg: Arc<ServerConfig>) -> std::io::
     sock.flush().await?;
 
     loop {
-
         let next = tokio::time::timeout(Duration::from_secs(20), rx.recv()).await;
         let frame = match next {
             Ok(Ok(msg)) => format!("data: {msg}\n\n"),

@@ -1,7 +1,6 @@
 // Copyright (c) 2026, https://blog.03k.org. All rights reserved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
-
     Redirect,
 
     Index,
@@ -13,7 +12,6 @@ pub enum Route {
 }
 
 pub fn classify(base: &str, path: &str) -> Route {
-
     let path = path.split('?').next().unwrap_or(path);
 
     let path = normalize(path);
@@ -28,7 +26,6 @@ pub fn classify(base: &str, path: &str) -> Route {
 
     match rest {
         "" => {
-
             if base.is_empty() {
                 Route::Index
             } else {
@@ -103,7 +100,6 @@ mod tests {
 
     #[test]
     fn everything_outside_the_prefix_is_invisible() {
-
         for p in [
             "/",
             "/index.html",
@@ -117,14 +113,12 @@ mod tests {
 
     #[test]
     fn a_prefix_that_is_only_a_string_prefix_does_not_match() {
-
         assert_eq!(classify(BASE, "/stmp2logger/api/messages"), Route::NotFound);
         assert_eq!(classify(BASE, "/stmp2log2/"), Route::NotFound);
     }
 
     #[test]
     fn duplicate_slashes_and_dot_segments_cannot_smuggle_past_the_prefix() {
-
         assert_eq!(
             classify(BASE, "//stmp2log//api//messages"),
             Route::Api("messages".into())
@@ -157,7 +151,6 @@ mod tests {
 
     #[test]
     fn unknown_paths_under_the_prefix_are_not_the_page() {
-
         assert_eq!(classify(BASE, "/stmp2log/assets/app.js"), Route::NotFound);
     }
 }

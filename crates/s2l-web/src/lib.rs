@@ -21,7 +21,6 @@ pub struct StaticAsset {
 }
 
 impl StaticAsset {
-
     pub fn new(html: &[u8], placeholder: &str, base: &str) -> Self {
         let text = String::from_utf8_lossy(html);
         let injected = text.replace(placeholder, base).into_bytes();
@@ -49,7 +48,6 @@ pub struct ApiReq {
 }
 
 impl ApiReq {
-
     pub fn param(&self, name: &str) -> Option<String> {
         for pair in self.query.split('&') {
             let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
@@ -102,19 +100,17 @@ pub fn urldecode(s: &str) -> String {
     let mut i = 0;
     while i < b.len() {
         match b[i] {
-            b'%' if i + 2 < b.len() => {
-                match u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                    Ok(v) => {
-                        out.push(v);
-                        i += 3;
-                    }
-
-                    Err(_) => {
-                        out.push(b'%');
-                        i += 1;
-                    }
+            b'%' if i + 2 < b.len() => match u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                Ok(v) => {
+                    out.push(v);
+                    i += 3;
                 }
-            }
+
+                Err(_) => {
+                    out.push(b'%');
+                    i += 1;
+                }
+            },
             b'+' => {
                 out.push(b' ');
                 i += 1;
@@ -160,7 +156,6 @@ mod tests {
 
     #[test]
     fn decodes_chinese_search_terms() {
-
         assert_eq!(urldecode("%E6%B8%A9%E5%BA%A6"), "温度");
         assert_eq!(
             req("subject=%E6%B8%A9%E5%BA%A6")
@@ -172,7 +167,6 @@ mod tests {
 
     #[test]
     fn a_lone_percent_is_not_an_error() {
-
         assert_eq!(urldecode("50%"), "50%");
         assert_eq!(urldecode("%zz"), "%zz");
         assert_eq!(urldecode("a%2"), "a%2");
@@ -211,7 +205,6 @@ mod tests {
 
     #[test]
     fn the_base_placeholder_is_fully_substituted() {
-
         let a = StaticAsset::new(
             br#"<base href="__S2L_BASE__/"><script>fetch("api/messages")</script>"#,
             "__S2L_BASE__",

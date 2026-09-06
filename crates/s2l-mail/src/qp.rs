@@ -9,7 +9,6 @@ pub fn decode(input: &[u8], underscore_is_space: bool) -> Vec<u8> {
                 i += 1;
             }
             b'=' => {
-
                 if let Some(rest) = input.get(i + 1..) {
                     if rest.starts_with(b"\r\n") {
                         i += 3;
@@ -79,7 +78,6 @@ mod tests {
 
     #[test]
     fn a_bare_equals_survives_when_it_cannot_be_an_escape() {
-
         assert_eq!(decode(b"CPU=high", false), b"CPU=high");
         assert_eq!(decode(b"trailing=", false), b"trailing=");
         assert_eq!(decode(b"a=Zz", false), b"a=Zz", "Z is not a hex digit");
@@ -87,7 +85,6 @@ mod tests {
 
     #[test]
     fn an_unencoded_equals_before_two_hex_digits_is_indistinguishable() {
-
         assert_eq!(decode(b"CPU=95%", false), b"CPU\x95%");
     }
 }

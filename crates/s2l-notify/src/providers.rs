@@ -31,7 +31,6 @@ pub enum NtfyAuth {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Channel {
     Ntfy {
-
         #[serde(default = "ntfy_default_server")]
         server: String,
         topic: String,
@@ -43,7 +42,6 @@ pub enum Channel {
         tags: Vec<String>,
     },
     Bark {
-
         endpoint: String,
         #[serde(default)]
         group: String,
@@ -65,7 +63,6 @@ pub enum Channel {
     },
     #[serde(rename = "dingtalk")]
     DingTalk {
-
         webhook: String,
 
         #[serde(default)]
@@ -83,16 +80,12 @@ pub enum Channel {
     },
     #[serde(rename = "wecom")]
     WeCom {
-
         key: String,
         #[serde(default)]
         mentioned_mobiles: Vec<String>,
     },
     #[serde(rename = "serverchan")]
-    ServerChan {
-
-        sendkey: String,
-    },
+    ServerChan { sendkey: String },
     #[serde(rename = "aliyun_sms")]
     AliyunSms {
         access_key_id: String,
@@ -117,7 +110,6 @@ fn telegram_default_server() -> String {
 }
 
 impl Channel {
-
     pub fn kind(&self) -> &'static str {
         match self {
             Channel::Ntfy { .. } => "ntfy",
@@ -202,7 +194,6 @@ pub fn build(ch: &Channel, p: &Payload, now_ms: i64) -> Built {
             sound,
             level,
         } => {
-
             let mut body = serde_json::json!({
                 "title": p.title,
                 "body": p.body,
@@ -286,7 +277,6 @@ pub fn build(ch: &Channel, p: &Payload, now_ms: i64) -> Built {
             key,
             mentioned_mobiles,
         } => {
-
             let url = if key.starts_with("http://") || key.starts_with("https://") {
                 key.clone()
             } else {
@@ -304,7 +294,6 @@ pub fn build(ch: &Channel, p: &Payload, now_ms: i64) -> Built {
         }
 
         Channel::ServerChan { sendkey } => {
-
             let url = match sctp_uid(sendkey) {
                 Some(uid) => format!("https://{uid}.push.ft07.com/send/{sendkey}.send"),
                 None => format!("https://sctapi.ftqq.com/{sendkey}.send"),
@@ -323,7 +312,6 @@ pub fn build(ch: &Channel, p: &Payload, now_ms: i64) -> Built {
             sign_name,
             template_code,
         } => {
-
             let template_param = serde_json::json!({
                 "subject": truncate(&p.title, 20),
                 "time": iso8601(now_ms),
@@ -387,7 +375,6 @@ pub fn check(ch: &Channel, resp: &http::Response) -> Result<(), String> {
     };
 
     match ch {
-
         Channel::DingTalk { .. } | Channel::WeCom { .. } => {
             if let Some(e) = field_err("errcode", "errmsg") {
                 return Err(e);
@@ -405,7 +392,6 @@ pub fn check(ch: &Channel, resp: &http::Response) -> Result<(), String> {
             }
         }
         Channel::ServerChan { .. } => {
-
             if let Some(e) = field_err("code", "message").or_else(|| field_err("code", "error")) {
                 return Err(e);
             }
@@ -582,7 +568,6 @@ mod tests {
 
     #[test]
     fn bark_uses_the_json_api_so_slashes_in_the_title_survive() {
-
         let ch = Channel::Bark {
             endpoint: "https://api.day.app/DEVICEKEY/".into(),
             group: "stmp2log".into(),
@@ -622,7 +607,6 @@ mod tests {
 
     #[test]
     fn dingtalk_appends_the_signature_with_an_ampersand() {
-
         let ch = Channel::DingTalk {
             webhook: "https://oapi.dingtalk.com/robot/send?access_token=TOKEN".into(),
             secret: "SECabc123".into(),
@@ -660,7 +644,6 @@ mod tests {
 
     #[test]
     fn feishu_puts_the_signature_in_the_body_with_a_seconds_timestamp() {
-
         let ch = Channel::Feishu {
             webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/xyz".into(),
             secret: "FSsecret456".into(),
@@ -687,7 +670,6 @@ mod tests {
 
     #[test]
     fn wecom_accepts_either_a_bare_key_or_a_full_webhook() {
-
         let bare = Channel::WeCom {
             key: "abc-123".into(),
             mentioned_mobiles: vec![],
@@ -714,7 +696,6 @@ mod tests {
 
     #[test]
     fn serverchan_routes_v3_keys_to_the_uid_host() {
-
         let v3 = Channel::ServerChan {
             sendkey: "sctp1234tABCDEFG".into(),
         };
@@ -785,7 +766,6 @@ mod tests {
 
     #[test]
     fn dingtalk_http_200_with_an_errcode_is_a_failure() {
-
         let ch = Channel::DingTalk {
             webhook: "x".into(),
             secret: String::new(),
@@ -803,7 +783,6 @@ mod tests {
 
     #[test]
     fn feishu_http_200_with_a_nonzero_code_is_a_failure() {
-
         let ch = Channel::Feishu {
             webhook: "x".into(),
             secret: String::new(),
@@ -834,7 +813,6 @@ mod tests {
 
     #[test]
     fn serverchan_v3_http_200_with_a_code_is_a_failure() {
-
         let ch = Channel::ServerChan {
             sendkey: "sctp1t".into(),
         };
@@ -905,7 +883,6 @@ mod tests {
 
     #[test]
     fn channels_round_trip_through_json() {
-
         let channels = vec![
             Channel::Ntfy {
                 server: ntfy_default_server(),
@@ -940,7 +917,6 @@ mod tests {
 
     #[test]
     fn optional_channel_fields_have_defaults_so_old_configs_keep_loading() {
-
         let ch: Channel = serde_json::from_str(r#"{"type":"ntfy","topic":"t"}"#).unwrap();
         match ch {
             Channel::Ntfy {

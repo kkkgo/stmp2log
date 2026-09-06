@@ -95,7 +95,6 @@ mod tests {
 
     #[test]
     fn parses_a_normal_date() {
-
         assert_eq!(parse(b"Tue, 2 Sep 2026 20:46:01 +0800"), Some(1788353161));
     }
 
@@ -121,7 +120,6 @@ mod tests {
 
     #[test]
     fn negative_offsets_go_the_right_way() {
-
         let utc = parse(b"2 Sep 2026 12:00:00 +0000").unwrap();
         assert_eq!(parse(b"2 Sep 2026 20:00:00 +0800").unwrap(), utc);
         assert_eq!(parse(b"2 Sep 2026 04:00:00 -0800").unwrap(), utc);
@@ -152,7 +150,6 @@ mod tests {
 
     #[test]
     fn garbage_returns_none_rather_than_a_wrong_time() {
-
         assert_eq!(parse(b""), None);
         assert_eq!(parse(b"not a date at all"), None);
         assert_eq!(parse(b"32 Sep 2026 20:46:01 +0800"), None);
@@ -161,7 +158,6 @@ mod tests {
 
     #[test]
     fn missing_zone_is_treated_as_utc() {
-
         assert_eq!(parse(b"2 Sep 2026 12:46:01"), Some(1788353161));
     }
 }

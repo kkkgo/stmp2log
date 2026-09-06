@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GroupFilter {
-
     Id(u32),
 
     Ungrouped,
@@ -13,7 +12,6 @@ pub enum GroupFilter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Sort {
-
     #[default]
     TimeDesc,
     TimeAsc,
@@ -21,7 +19,6 @@ pub enum Sort {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Query {
-
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -63,7 +60,6 @@ pub const DEFAULT_LIMIT: usize = 50;
 pub const MAX_LIMIT: usize = 500;
 
 impl Query {
-
     pub fn needs_body(&self) -> bool {
         self.body.as_deref().is_some_and(|s| !s.trim().is_empty())
     }
@@ -206,7 +202,6 @@ mod tests {
 
     #[test]
     fn a_blank_body_string_does_not_trigger_a_disk_scan() {
-
         let q = Query {
             body: Some("   ".into()),
             ..Default::default()
@@ -285,7 +280,6 @@ mod tests {
 
     #[test]
     fn ungrouped_filter_finds_only_unmatched_mail() {
-
         let mut r = rec();
         assert!(
             !Query {

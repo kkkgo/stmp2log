@@ -3,7 +3,6 @@ use crate::word;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Addr {
-
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
 
@@ -11,7 +10,6 @@ pub struct Addr {
 }
 
 impl Addr {
-
     pub fn user(&self) -> &str {
         match self.addr.rsplit_once('@') {
             Some((u, _)) => u,
@@ -131,7 +129,6 @@ mod tests {
 
     #[test]
     fn domain_is_lowercased_but_user_is_not() {
-
         let x = a("Alarm@NAS.LOCAL");
         assert_eq!(x.addr, "Alarm@nas.local");
         assert_eq!(x.user(), "Alarm");
@@ -140,7 +137,6 @@ mod tests {
 
     #[test]
     fn angle_brackets_inside_display_name() {
-
         let x = a("\"<admin>\" <real@host.com>");
         assert_eq!(x.addr, "real@host.com");
     }
@@ -154,7 +150,6 @@ mod tests {
 
     #[test]
     fn garbage_still_yields_something() {
-
         let x = a("device01");
         assert_eq!(x.addr, "device01");
         assert_eq!(x.user(), "device01");

@@ -126,3 +126,6 @@ push_url=http://stmp.example.com:8025/stmp2log
 ```
 
 不同区域各跑一台就近收信，再统一汇到一台机器上看。推送同步使用 `web_pass` 加密和鉴权，每条推送带上发送方的 `stmp_hostname`，汇总端按它区分来源。转推来的日志不会再次转发。汇总端可以只开 Web 不收信（`stmp_listen` 留空）。
+
+## blog
+https://blog.03k.org/post/stmp2log.html

@@ -1,0 +1,30 @@
+[package]
+name = "stmp2log"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "A fake-SMTP mail sink that logs device alerts and forwards them to modern push channels"
+[[bin]]
+name = "stmp2log"
+path = "src/main.rs"
+[dependencies]
+s2l-mail = { path = "../s2l-mail" }
+s2l-store = { path = "../s2l-store" }
+s2l-smtp = { path = "../s2l-smtp" }
+s2l-notify = { path = "../s2l-notify" }
+s2l-web = { path = "../s2l-web" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+arc-swap = { workspace = true }
+miniz_oxide = { workspace = true }
+base64 = { workspace = true }
+ring = { workspace = true }
+getrandom = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+libc = { workspace = true }
+thiserror = { workspace = true }
+[build-dependencies]
+miniz_oxide = { workspace = true }

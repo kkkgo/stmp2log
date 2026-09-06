@@ -8,5 +8,9 @@ node_modules/
 .vscode/
 .idea/
 .DS_Store
-stmp2log
+# build.sh 末尾会把二进制 cp 到仓库根目录。**必须带前导斜杠** ——
+# 不带的话这个模式会匹配任意层级上叫 stmp2log 的路径，把整个
+# crates/stmp2log/ 一起忽略掉（在已经跟踪了那些文件的仓库里看不出来，
+# 一到全新的克隆就是 `failed to read crates/stmp2log/Cargo.toml`）。
+/stmp2log
 /dist

@@ -10,7 +10,6 @@ pub use addr::Addr;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Mail {
-
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub headers: Vec<(String, String)>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -47,12 +46,10 @@ pub struct AttachmentMeta {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Options {
-
     pub keep_attachments: bool,
 }
 
 impl Mail {
-
     pub fn from_addr(&self) -> &str {
         self.from.as_ref().map(|a| a.addr.as_str()).unwrap_or("")
     }
@@ -95,7 +92,6 @@ mod tests {
 
     #[test]
     fn bare_lf_line_endings_still_parse() {
-
         let raw = b"Subject: Bare LF\nFrom: a@b.c\n\nbody here\n";
         let m = parse(raw);
         assert_eq!(m.subject, "Bare LF");
@@ -110,7 +106,6 @@ mod tests {
 
     #[test]
     fn gbk_subject_and_body() {
-
         let mut raw = Vec::new();
         raw.extend_from_slice(b"From: ups@idc.local\r\n");
         raw.extend_from_slice(b"Subject: =?GB2312?B?zsK2yLjmvq8=?=\r\n");
@@ -142,7 +137,6 @@ Content-Type: text/html\r\n\
 
     #[test]
     fn html_only_mail_gets_a_text_summary() {
-
         let raw = b"Subject: Alert\r\n\
 Content-Type: text/html; charset=utf-8\r\n\
 \r\n\
@@ -170,7 +164,6 @@ Content-Transfer-Encoding: base64\r\n\
 
     #[test]
     fn a_body_that_lies_about_being_base64_survives() {
-
         let raw = b"Content-Transfer-Encoding: base64\r\n\r\nthis is not base64!!!\r\n";
         assert!(parse(raw).text.contains("not base64"));
     }
@@ -201,7 +194,6 @@ aGVsbG8gd29ybGQ=\r\n\
 
     #[test]
     fn an_rfc2231_encoded_filename_is_decoded() {
-
         let raw = b"Content-Type: multipart/mixed; boundary=\"B\"\r\n\
 \r\n\
 --B\r\n\
@@ -215,7 +207,6 @@ data\r\n\
 
     #[test]
     fn an_rfc2231_filename_split_across_segments_is_rejoined() {
-
         let raw = b"Content-Type: multipart/mixed; boundary=\"B\"\r\n\
 \r\n\
 --B\r\n\
@@ -231,7 +222,6 @@ data\r\n\
 
     #[test]
     fn a_gbk_rfc2231_filename_is_decoded_with_its_own_charset() {
-
         let raw = b"Content-Type: multipart/mixed; boundary=\"B\"\r\n\
 \r\n\
 --B\r\n\
@@ -245,7 +235,6 @@ data\r\n\
 
     #[test]
     fn a_plain_quoted_filename_still_works() {
-
         let raw = b"Content-Type: multipart/mixed; boundary=\"B\"\r\n\
 \r\n\
 --B\r\n\
@@ -288,7 +277,6 @@ aGVsbG8gd29ybGQ=\r\n\
 
     #[test]
     fn multipart_without_boundary_degrades_to_text() {
-
         let raw = b"Content-Type: multipart/mixed\r\n\r\nthe whole body\r\n";
         assert!(parse(raw).text.contains("the whole body"));
     }
@@ -311,7 +299,6 @@ nested text\r\n\
 
     #[test]
     fn headerless_garbage_does_not_panic() {
-
         for junk in [
             &b""[..],
             b"\r\n",
@@ -328,7 +315,6 @@ nested text\r\n\
 
     #[test]
     fn line_endings_are_normalised_to_lf() {
-
         let m = parse(b"Subject: x\r\n\r\nline one\r\nline two\r\n");
         assert_eq!(m.text, "line one\nline two\n");
         assert!(!m.text.contains('\r'));
@@ -339,14 +325,12 @@ nested text\r\n\
 
     #[test]
     fn a_bare_cr_is_also_treated_as_a_line_break() {
-
         let m = parse(b"Subject: x\r\n\r\nline one\rline two");
         assert_eq!(m.text, "line one\nline two");
     }
 
     #[test]
     fn envelope_only_mail_still_yields_a_record() {
-
         let m = parse(b"\r\nsomething happened");
         assert_eq!(m.subject, "");
         assert_eq!(m.from_addr(), "");

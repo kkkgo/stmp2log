@@ -45,7 +45,6 @@ pub fn parse(raw: &[u8], opts: Options) -> Mail {
 }
 
 fn split_headers(raw: &[u8]) -> (Vec<(String, Vec<u8>)>, &[u8]) {
-
     if let Some(rest) = raw.strip_prefix(b"\r\n") {
         return (Vec::new(), rest);
     }
@@ -80,7 +79,6 @@ fn unfold(head: &[u8]) -> Vec<(String, Vec<u8>)> {
             continue;
         }
         if line[0] == b' ' || line[0] == b'\t' {
-
             if let Some((_, v)) = out.last_mut() {
                 v.push(b' ');
                 v.extend_from_slice(line.trim_ascii_start());
@@ -115,7 +113,6 @@ fn walk(
 
     if ct.mime.starts_with("multipart/") {
         let Some(boundary) = ct.param("boundary").filter(|b| !b.is_empty()) else {
-
             push_text(
                 mail,
                 &decode_body(body, cte),
@@ -180,7 +177,6 @@ fn walk_part(
 
     if is_attachment {
         if mail.attachments.len() < MAX_ATTACHMENTS {
-
             let data = opts.keep_attachments.then(|| decode_body(body, cte));
             mail.attachments.push(AttachmentMeta {
                 filename: filename.unwrap_or_else(|| "attachment".into()),
@@ -375,14 +371,12 @@ impl ContentType {
     }
 
     fn param(&self, name: &str) -> Option<String> {
-
         let mut segs: Vec<(u32, bool, &str)> = Vec::new();
         for (k, v) in &self.params {
             let Some(rest) = k.strip_prefix(name) else {
                 continue;
             };
             match rest {
-
                 "" => segs.push((0, false, v)),
 
                 "*" => segs.push((0, true, v)),

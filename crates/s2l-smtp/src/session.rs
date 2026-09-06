@@ -11,7 +11,6 @@ const MAX_RCPT: usize = 100;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum End {
-
     Done,
 
     StartTls,
@@ -54,7 +53,6 @@ where
         let n = match tokio::time::timeout(cfg.timeout, read_line(&mut rd, &mut line)).await {
             Ok(r) => r?,
             Err(_) => {
-
                 let _ = write_line(&mut rd, "421 4.4.2 idle timeout, closing").await;
                 return Ok(End::Done);
             }
@@ -129,7 +127,6 @@ where
                 match read_data(&mut rd, cfg).await? {
                     Ok(data) => {
                         let msg = Delivered {
-
                             envelope_from: st
                                 .mail_from
                                 .clone()
@@ -148,7 +145,6 @@ where
                         let reply = match cfg.sink.try_send(msg) {
                             Ok(()) => "250 2.0.0 message accepted".to_string(),
                             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-
                                 "451 4.3.1 mail queue is full, try again later".to_string()
                             }
                             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
@@ -173,7 +169,6 @@ where
             }
             "NOOP" => write_line(&mut rd, "250 2.0.0 ok").await?,
             "VRFY" | "EXPN" => {
-
                 write_line(&mut rd, "252 2.5.2 cannot verify, will accept anyway").await?;
             }
             "HELP" => {
@@ -187,9 +182,7 @@ where
                 write_line(&mut rd, &format!("221 2.0.0 {} closing", cfg.hostname)).await?;
                 return Ok(End::Done);
             }
-            "" => {
-
-            }
+            "" => {}
             other => {
                 write_line(&mut rd, &format!("500 5.5.2 unknown command {other}")).await?;
             }
@@ -229,7 +222,6 @@ fn ehlo_lines(cfg: &Config, tls_active: bool) -> Vec<String> {
     out.push(format!("250-{}", cfg.hostname));
     let last = caps.len() - 1;
     for (i, c) in caps.into_iter().enumerate() {
-
         out.push(if i == last {
             format!("250 {c}")
         } else {
@@ -256,7 +248,6 @@ fn credentials_ok(policy: &AuthPolicy, creds: &Creds) -> bool {
         return false;
     }
     if !pass.is_empty() {
-
         match &creds.pass {
             Some(got) if got == pass => {}
             _ => return false,
@@ -298,7 +289,6 @@ where
             Creds { user, pass }
         }
         "LOGIN" => {
-
             write_line(rd, "334 VXNlcm5hbWU6").await?;
             let u = read_b64_line(rd).await?;
 
@@ -310,7 +300,6 @@ where
             }
         }
         "CRAM-MD5" => {
-
             write_line(rd, "334 PHN0bXAybG9nLmNoYWxsZW5nZT4=").await?;
             let resp = read_b64_line(rd).await?;
             Creds {
@@ -332,7 +321,6 @@ where
         }
     };
     if credentials_ok(&cfg.auth, &creds) {
-
         st.auth_user = Some(creds.user);
         write_line(rd, "235 2.7.0 authentication successful").await
     } else {
@@ -358,7 +346,6 @@ where
             .await
             .unwrap_or(Ok(0))?;
         if n == 0 {
-
             break;
         }
         let body = trim_eol(&line);
@@ -373,7 +360,6 @@ where
         };
 
         if out.len() + body.len() + 2 > cfg.max_size {
-
             too_big = true;
         }
         if !too_big {
@@ -507,7 +493,6 @@ mod tests {
 
     #[test]
     fn ehlo_terminator_uses_a_space_not_a_hyphen() {
-
         let cfg = Config::for_test();
         let lines = ehlo_lines(&cfg, false);
         assert!(lines.len() >= 2);
@@ -545,7 +530,6 @@ mod tests {
 
     #[test]
     fn auth_is_always_advertised() {
-
         assert!(
             ehlo_lines(&Config::for_test(), false)
                 .iter()
@@ -555,7 +539,6 @@ mod tests {
 
     #[test]
     fn base64_falls_back_to_the_literal_bytes() {
-
         assert_eq!(b64("dXNlcg=="), b"user");
         assert_eq!(b64("not base64 at all"), b"not base64 at all");
     }
@@ -578,7 +561,6 @@ mod protocol {
     }
 
     impl Harness {
-
         fn codes(&self) -> Vec<&str> {
             self.replies
                 .lines()
@@ -647,7 +629,6 @@ mod protocol {
 
     #[tokio::test]
     async fn no_greeting_is_sent_after_a_starttls_upgrade() {
-
         let h = dialog_no_greeting(
             b"EHLO secure\r\nMAIL FROM:<a@b.c>\r\nRCPT TO:<l@y>\r\nDATA\r\nhi\r\n.\r\nQUIT\r\n",
         )
@@ -714,7 +695,6 @@ mod protocol {
 
     #[tokio::test]
     async fn bare_lf_line_endings_work_end_to_end() {
-
         let h = run_script(
             b"EHLO dev\n\
               MAIL FROM:<a@b.c>\n\
@@ -742,7 +722,6 @@ mod protocol {
 
     #[tokio::test]
     async fn auth_login_accepts_any_credentials() {
-
         let h = run_script(
             b"EHLO d\r\n\
               AUTH LOGIN\r\n\
@@ -762,14 +741,12 @@ mod protocol {
 
     #[tokio::test]
     async fn auth_plain_with_an_initial_response() {
-
         let h = run_script(b"EHLO d\r\nAUTH PLAIN AGRldmljZTAxAHNlY3JldA==\r\nQUIT\r\n").await;
         assert!(h.replies.contains("235 "));
     }
 
     #[tokio::test]
     async fn auth_cram_md5_is_challenged_and_accepted() {
-
         let h = run_script(b"EHLO d\r\nAUTH CRAM-MD5\r\nZGV2aWNlMDEgYWJjZGVm\r\nQUIT\r\n").await;
         assert!(h.replies.contains("334 "));
         assert!(h.replies.contains("235 "));
@@ -811,7 +788,6 @@ mod protocol {
 
     #[tokio::test]
     async fn anonymous_delivery_is_refused_once_credentials_are_configured() {
-
         for p in [
             require("device01", ""),
             require("", "s3cret"),
@@ -829,7 +805,6 @@ mod protocol {
 
     #[tokio::test]
     async fn anonymous_delivery_is_the_normal_case_when_nothing_is_configured() {
-
         let h = deliver_anonymously(AuthPolicy::AcceptAny).await;
         assert_eq!(h.got.len(), 1);
         assert!(h.got[0].auth_user.is_none());
@@ -837,7 +812,6 @@ mod protocol {
 
     #[tokio::test]
     async fn a_device_that_fills_in_only_the_account_can_still_deliver() {
-
         use base64::Engine;
         let enc = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
         let (c, rx) = cfg();
@@ -854,7 +828,6 @@ mod protocol {
 
     #[tokio::test]
     async fn only_a_configured_username_is_checked() {
-
         let p = || require("device01", "");
         assert!(
             login_as(p(), "device01", "anything")
@@ -873,7 +846,6 @@ mod protocol {
 
     #[tokio::test]
     async fn only_a_configured_password_is_checked() {
-
         let p = || require("", "s3cret");
         assert!(login_as(p(), "ups-01", "s3cret").await.replies.contains(OK));
         assert!(login_as(p(), "nas-07", "s3cret").await.replies.contains(OK));
@@ -917,7 +889,6 @@ mod protocol {
 
     #[tokio::test]
     async fn cram_md5_disappears_once_a_password_is_required() {
-
         let mut c = Config::for_test();
         c.auth = require("", "s3cret");
         let advertised = ehlo_lines(&c, false).join("\n");
@@ -930,7 +901,6 @@ mod protocol {
 
     #[tokio::test]
     async fn cram_md5_is_refused_rather_than_bypassing_the_password_check() {
-
         let (mut c, rx) = cfg();
         c.auth = require("", "s3cret");
         let h = dialog(
@@ -944,7 +914,6 @@ mod protocol {
 
     #[tokio::test]
     async fn the_username_is_recorded_even_when_nothing_is_checked() {
-
         let h = run_script(
             b"EHLO d\r\nAUTH LOGIN\r\ndXBzLTAx\r\ncHc=\r\n\
               MAIL FROM:<a@b.c>\r\nRCPT TO:<x@y>\r\nDATA\r\nhi\r\n.\r\nQUIT\r\n",
@@ -955,7 +924,6 @@ mod protocol {
 
     #[tokio::test]
     async fn dot_stuffing_is_undone() {
-
         let h = run_script(
             b"MAIL FROM:<a@b.c>\r\nRCPT TO:<x@y>\r\nDATA\r\n\
               ..hidden leading dot\r\n\
@@ -970,7 +938,6 @@ mod protocol {
 
     #[tokio::test]
     async fn data_without_mail_from_still_yields_a_record() {
-
         let h = run_script(b"DATA\r\nSubject: orphan\r\n\r\nbody\r\n.\r\nQUIT\r\n").await;
         assert_eq!(h.got.len(), 1);
         assert_eq!(
@@ -985,7 +952,6 @@ mod protocol {
 
     #[tokio::test]
     async fn an_oversized_message_is_rejected_and_the_session_survives() {
-
         let (mut c, rx) = cfg();
         c.max_size = 64;
         let mut script = b"MAIL FROM:<a@b.c>\r\nRCPT TO:<x@y>\r\nDATA\r\n".to_vec();
@@ -1006,7 +972,6 @@ mod protocol {
 
     #[tokio::test]
     async fn a_full_queue_asks_the_device_to_retry() {
-
         let (tx, rx) = mpsc::channel(1);
         let c = Config::new(tx);
 
@@ -1038,14 +1003,12 @@ mod protocol {
 
     #[tokio::test]
     async fn blank_lines_between_commands_are_ignored() {
-
         let h = run_script(b"EHLO d\r\n\r\n\r\nNOOP\r\nQUIT\r\n").await;
         assert!(!h.replies.contains("500 "), "replies: {:?}", h.replies);
     }
 
     #[tokio::test]
     async fn ehlo_resets_a_half_built_envelope() {
-
         let h = run_script(
             b"MAIL FROM:<first@x>\r\nRCPT TO:<a@y>\r\n\
               EHLO restart\r\n\
@@ -1073,7 +1036,6 @@ mod protocol {
 
     #[tokio::test]
     async fn multiple_messages_in_one_connection() {
-
         let h = run_script(
             b"EHLO d\r\n\
               MAIL FROM:<a@x>\r\nRCPT TO:<l@y>\r\nDATA\r\nfirst\r\n.\r\n\
@@ -1089,7 +1051,6 @@ mod protocol {
 
     #[tokio::test]
     async fn a_connection_that_dies_mid_data_still_keeps_what_arrived() {
-
         let h = run_script(b"MAIL FROM:<a@x>\r\nRCPT TO:<l@y>\r\nDATA\r\npartial line\r\n").await;
         assert_eq!(h.got.len(), 1);
         assert!(String::from_utf8_lossy(&h.got[0].data).contains("partial line"));
@@ -1107,7 +1068,6 @@ mod protocol {
 
     #[tokio::test]
     async fn gbk_bytes_in_the_envelope_do_not_break_the_parser() {
-
         let mut script = b"MAIL FROM:<\xCE\xC2\xB6\xC8@nas.local>\r\nRCPT TO:<l@y>\r\nDATA\r\nhi\r\n.\r\nQUIT\r\n".to_vec();
         script.shrink_to_fit();
         let h = run_script(&script).await;

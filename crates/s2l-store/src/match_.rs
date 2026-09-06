@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Field {
-
     From,
 
     FromUser,
@@ -46,7 +45,6 @@ pub enum Op {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Logic {
-
     #[default]
     All,
 
@@ -90,7 +88,6 @@ pub struct Target<'a> {
 }
 
 impl Matcher {
-
     pub fn is_unconditional(&self) -> bool {
         self.conditions.is_empty()
     }
@@ -108,10 +105,8 @@ impl Matcher {
 
 impl Condition {
     pub fn matches(&self, t: &Target<'_>) -> bool {
-
         if matches!(self.field, Field::Rcpt) {
             return match self.op {
-
                 Op::NotContains | Op::NotEquals => t.rcpt.iter().all(|r| self.test(r)),
                 Op::Empty => t.rcpt.is_empty(),
                 Op::NotEmpty => !t.rcpt.is_empty(),
@@ -144,7 +139,6 @@ impl Condition {
     }
 
     fn test(&self, subject: &str) -> bool {
-
         let (hay, needle);
         let (h, n) = if self.case_sensitive {
             (subject, self.value.as_str())
@@ -184,7 +178,6 @@ fn glob(hay: &str, pat: &str) -> bool {
             star_hi = hi;
             pi += 1;
         } else if star != usize::MAX {
-
             pi = star + 1;
             star_hi += 1;
             hi = star_hi;
@@ -231,7 +224,6 @@ mod tests {
 
     #[test]
     fn a_rule_can_target_a_group_without_repeating_its_conditions() {
-
         let t = Target {
             group: "5",
             ..target()
@@ -269,7 +261,6 @@ mod tests {
 
     #[test]
     fn the_smtp_account_is_matchable() {
-
         let t = Target {
             auth_user: "ups-01",
             ..target()
@@ -283,7 +274,6 @@ mod tests {
 
     #[test]
     fn no_conditions_means_match_everything() {
-
         let m = Matcher::default();
         assert!(m.is_unconditional());
         assert!(m.matches(&target()));
@@ -309,7 +299,6 @@ mod tests {
 
     #[test]
     fn matches_chinese_subject_keyword() {
-
         let m = Matcher {
             logic: Logic::All,
             conditions: vec![cond(Field::Subject, Op::Contains, "温度")],
@@ -319,7 +308,6 @@ mod tests {
 
     #[test]
     fn case_insensitive_by_default() {
-
         let m = Matcher {
             logic: Logic::All,
             conditions: vec![cond(Field::Subject, Op::Contains, "alert")],
@@ -400,7 +388,6 @@ mod tests {
 
     #[test]
     fn negation_on_multivalued_rcpt_requires_all_to_miss() {
-
         let rcpt = ["a@x.com".to_string(), "b@y.com".to_string()];
         let t = Target {
             rcpt: &rcpt,
@@ -450,7 +437,6 @@ mod tests {
 
     #[test]
     fn glob_does_not_blow_up_on_pathological_patterns() {
-
         let hay = "a".repeat(64);
         assert!(!glob(&hay, &format!("{}b", "*a".repeat(24))));
     }
@@ -462,7 +448,6 @@ mod tests {
 
     #[test]
     fn round_trips_through_json() {
-
         let m = Matcher {
             logic: Logic::Any,
             conditions: vec![
