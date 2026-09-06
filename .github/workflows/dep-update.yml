@@ -1,0 +1,33 @@
+name: Update deps
+
+on:
+  schedule:
+    - cron: '30 01 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@main
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+
+      - name: Update dependencies
+        run: cargo update --verbose
+
+      - name: Verify (fmt / clippy / test / build)
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --all
+          cargo build -p stmp2log --profile release-small
+
+      - name: Commit updated lockfile
+        uses: kkkgo/Git-Commit-Action@main
+        with:
+          add: Cargo.lock

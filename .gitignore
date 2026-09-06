@@ -1,0 +1,12 @@
+/target
+node_modules/
+/webui/build
+/webui/.svelte-kit
+/data
+*.log
+/config.local.ini
+.vscode/
+.idea/
+.DS_Store
+stmp2log
+/dist

@@ -1,0 +1,12 @@
+services:
+  stmp2log:
+    pull_policy: always
+    image: public.ecr.aws/sliamb/stmp2log:latest
+    container_name: stmp2log
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      # config.ini、日志分段文件、state.json、自签证书全在这一个目录下。
+      - ./data:/data
+    network_mode: "host"

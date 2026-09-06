@@ -1,0 +1,11 @@
+[package]
+name = "s2l-mail"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[dependencies]
+serde = { workspace = true }
+base64 = { workspace = true }
+encoding_rs = { workspace = true }
+thiserror = { workspace = true }

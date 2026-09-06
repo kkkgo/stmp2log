@@ -1,0 +1,15 @@
+[package]
+name = "s2l-smtp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[dependencies]
+s2l-mail = { path = "../s2l-mail" }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }
+base64 = { workspace = true }
+getrandom = { workspace = true }
+thiserror = { workspace = true }

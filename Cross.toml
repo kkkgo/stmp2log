@@ -1,0 +1,2 @@
+[build.env]
+passthrough = ["STMP2LOG_VERSION", "SOURCE_DATE_EPOCH"]

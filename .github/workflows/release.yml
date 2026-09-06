@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    paths-ignore:
+      - '.github/**'
+      - 'LICENSE'
+      - '*.md'
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@main
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@master
+
+      - name: Test
+        run: cargo test --all
+
+  build:
+    name: Build ${{ matrix.uname_m }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, uname_m: x86_64 }
+          - { target: aarch64-unknown-linux-musl, uname_m: aarch64 }
+          - { target: armv7-unknown-linux-musleabihf, uname_m: armv7l }
+          - { target: arm-unknown-linux-musleabihf, uname_m: armv6l }
+          - { target: i686-unknown-linux-musl, uname_m: i686 }
+    steps:
+      - uses: actions/checkout@main
+        with:
+          fetch-depth: 0
+      - name: Compute a reproducible version
+        run: |
+          LAST=$(git log -1 --format=%H -- '*.rs' '*.svelte' '*.js' '*.css' Cargo.toml Cargo.lock)
+          [ -z "$LAST" ] && LAST=$(git rev-parse HEAD)
+          HASH=$(git rev-parse --short=7 "$LAST")
+          EPOCH=$(git log -1 --format=%ct "$LAST")
+          DATE=$(date -u -d "@${EPOCH}" +%Y%m%d)
+          echo "STMP2LOG_VERSION=${DATE}-${HASH}" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=${EPOCH}" >> "$GITHUB_ENV"
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Install cross
+        uses: taiki-e/install-action@main
+        with:
+          tool: cross
+
+      - name: Build
+        run: |
+          cross build -p stmp2log --profile release-small --target ${{ matrix.target }}
+          mkdir -p out
+          cp "target/${{ matrix.target }}/release-small/stmp2log" "out/stmp2log_${{ matrix.uname_m }}"
+
+      - uses: actions/upload-artifact@main
+        with:
+          name: bin-${{ matrix.uname_m }}
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    name: Push binaries to the release branch
+    needs: build
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@main
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@main
+        with:
+          path: dl
+          pattern: bin-*
+          merge-multiple: true
+
+      - name: Push to the release branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ ! -d dl ] || [ -z "$(ls -A dl 2>/dev/null)" ]; then
+            echo "No binaries were produced; nothing to publish."
+            exit 1
+          fi
+          ls -l dl
+          SRC=$(git rev-parse HEAD)
+
+          sed "s|__REPO__|${REPO}|g" .github/release-README.md > /tmp/README.md
+
+          git config --global user.name "Github Actions"
+          git config --global user.email "actions@github.com"
+
+          if git clone --branch release --single-branch \
+              "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" release_branch; then
+            echo "Cloned the existing release branch"
+          else
+            git clone --single-branch \
+              "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" release_branch
+            (cd release_branch && git checkout --orphan release && git rm -rf .)
+          fi
+
+          cd release_branch
+          git checkout --orphan release_new
+          git rm -rf . 2>/dev/null || true
+          cp /tmp/README.md ./README.md
+          cp ../dl/stmp2log_* .
+          git add .
+          git commit -m "release: ${SRC}"
+          git push origin release_new:release --force

@@ -1,0 +1,136 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'LICENSE'
+      - '*.md'
+  schedule:
+    - cron: '57 15 * * 2'
+  workflow_dispatch:
+
+jobs:
+  binaries:
+    name: Build ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, arch: amd64 }
+          - { target: i686-unknown-linux-musl, arch: '386' }
+          - { target: aarch64-unknown-linux-musl, arch: arm64 }
+          - { target: armv7-unknown-linux-musleabihf, arch: armv7 }
+          - { target: arm-unknown-linux-musleabihf, arch: armv6 }
+    steps:
+      - uses: actions/checkout@main
+        with:
+          fetch-depth: 0
+      - name: Compute a reproducible version
+        run: |
+          LAST=$(git log -1 --format=%H -- '*.rs' '*.svelte' '*.js' '*.css' Cargo.toml Cargo.lock)
+          [ -z "$LAST" ] && LAST=$(git rev-parse HEAD)
+          HASH=$(git rev-parse --short=7 "$LAST")
+          EPOCH=$(git log -1 --format=%ct "$LAST")
+          DATE=$(date -u -d "@${EPOCH}" +%Y%m%d)
+          echo "STMP2LOG_VERSION=${DATE}-${HASH}" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=${EPOCH}" >> "$GITHUB_ENV"
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@master
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        uses: taiki-e/install-action@main
+        with:
+          tool: cross
+
+      - name: Build
+        run: |
+          cross build -p stmp2log --profile release-small --target ${{ matrix.target }}
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release-small/stmp2log" "dist/stmp2log_${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@main
+        with:
+          name: dist-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  image:
+    name: Build and push
+    needs: binaries
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/stmp2log
+    steps:
+      - uses: actions/checkout@main
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@main
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+
+      - name: Tag with the same version the binary reports
+        run: |
+          LAST=$(git log -1 --format=%H -- '*.rs' '*.svelte' '*.js' '*.css' Cargo.toml Cargo.lock)
+          [ -z "$LAST" ] && LAST=$(git rev-parse HEAD)
+          HASH=$(git rev-parse --short=7 "$LAST")
+          DATE=$(date -u -d "@$(git log -1 --format=%ct "$LAST")" +%Y%m%d)
+          echo "VERSION=${DATE}-${HASH}" >> "$GITHUB_ENV"
+          chmod +x dist/*
+          ls -l dist
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@master
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@master
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@master
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@master
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/386,linux/arm64,linux/arm/v7,linux/arm/v6
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ env.VERSION }}
+
+  push-ecr:
+    name: Mirror to ECR
+    needs: image
+    runs-on: ubuntu-latest
+    container: alpine:edge
+    env:
+      IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/stmp2log
+      ECR: public.ecr.aws/sliamb/stmp2log
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@main
+        with:
+          aws-region: us-east-1
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Install skopeo and aws-cli
+        run: apk update && apk upgrade && apk add skopeo aws-cli
+
+      - name: Login to ECR
+        run: aws ecr-public get-login-password --region us-east-1 | skopeo login --username AWS --password-stdin public.ecr.aws
+
+      - name: Copy the whole manifest list
+        run: skopeo copy --all docker://${{ env.IMAGE }}:latest docker://${{ env.ECR }}:latest
