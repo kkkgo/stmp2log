@@ -76,6 +76,32 @@ pub struct NotifyRule {
 
     #[serde(default)]
     pub cooldown: u32,
+
+    #[serde(default)]
+    pub email_to: Vec<String>,
+}
+
+impl NotifyRule {
+    pub fn with_recipients<'a>(
+        &self,
+        ch: &'a s2l_notify::Channel,
+    ) -> std::borrow::Cow<'a, s2l_notify::Channel> {
+        if self.email_to.is_empty() {
+            return std::borrow::Cow::Borrowed(ch);
+        }
+        let mut copy = ch.clone();
+        apply_recipients(&mut copy, &self.email_to);
+        std::borrow::Cow::Owned(copy)
+    }
+}
+
+pub fn apply_recipients(ch: &mut s2l_notify::Channel, to: &[String]) {
+    if to.is_empty() {
+        return;
+    }
+    if let s2l_notify::Channel::Email { to: dst, .. } = ch {
+        *dst = to.to_vec();
+    }
 }
 
 fn yes() -> bool {
@@ -529,6 +555,7 @@ mod tests {
             title: default_title_tpl(),
             body: default_body_tpl(),
             cooldown: 60,
+            email_to: vec!["ops@example.com".into()],
         });
 
         let json = serde_json::to_string(&s).unwrap();
@@ -542,6 +569,76 @@ mod tests {
         let s: State = serde_json::from_str("{}").unwrap();
         assert_eq!(s.next_id, 1);
         assert_eq!(s.access.mode, AccessMode::Off);
+
+        let r: NotifyRule = serde_json::from_str(
+            r#"{"id":1,"name":"old","matcher":{"logic":"all","conditions":[]},"channels":[2]}"#,
+        )
+        .unwrap();
+        assert!(r.email_to.is_empty(), "an old rule means 'use the channel'");
+    }
+
+    fn email_channel() -> s2l_notify::Channel {
+        s2l_notify::Channel::Email {
+            server: "smtp.example.com".into(),
+            port: 465,
+            encryption: s2l_notify::EmailTls::Tls,
+            username: "alerts@example.com".into(),
+            password: "token".into(),
+            from: String::new(),
+            to: vec!["oncall@example.com".into()],
+            skip_verify: false,
+        }
+    }
+
+    fn rule_to(email_to: &[&str]) -> NotifyRule {
+        NotifyRule {
+            id: 1,
+            name: "r".into(),
+            enabled: true,
+            matcher: Matcher::default(),
+            channels: vec![1],
+            title: default_title_tpl(),
+            body: default_body_tpl(),
+            cooldown: 0,
+            email_to: email_to.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_rule_can_send_the_same_mailbox_channel_to_someone_else() {
+        let ch = email_channel();
+        let aimed = rule_to(&["boss@example.com", "ops@example.com"]).with_recipients(&ch);
+        let s2l_notify::Channel::Email { to, username, .. } = aimed.as_ref() else {
+            panic!("still an email channel");
+        };
+        assert_eq!(to, &["boss@example.com", "ops@example.com"]);
+        assert_eq!(username, "alerts@example.com", "the login must not change");
+    }
+
+    #[test]
+    fn a_rule_without_recipients_uses_the_channels_own() {
+        let ch = email_channel();
+        let aimed = rule_to(&[]).with_recipients(&ch);
+        assert!(
+            matches!(aimed, std::borrow::Cow::Borrowed(_)),
+            "the common path must not copy the channel"
+        );
+        let s2l_notify::Channel::Email { to, .. } = aimed.as_ref() else {
+            unreachable!()
+        };
+        assert_eq!(to, &["oncall@example.com"]);
+    }
+
+    #[test]
+    fn recipients_on_a_rule_never_touch_the_other_channel_types() {
+        let bark = s2l_notify::Channel::Bark {
+            endpoint: "https://api.day.app/KEY".into(),
+            group: String::new(),
+            sound: String::new(),
+            level: String::new(),
+        };
+        let aimed = rule_to(&["boss@example.com"]).with_recipients(&bark);
+        assert_eq!(aimed.as_ref(), &bark);
     }
 
     #[test]

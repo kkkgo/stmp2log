@@ -25,6 +25,8 @@ pub struct QueuedNotify {
     pub rule: String,
     pub subject: String,
     pub payload: s2l_notify::Payload,
+
+    pub email_to: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -235,6 +237,7 @@ mod tests {
             rule: "all".into(),
             subject: subject.into(),
             payload: s2l_notify::Payload::default(),
+            email_to: vec![],
         })
     }
 

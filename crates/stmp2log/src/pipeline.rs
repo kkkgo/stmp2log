@@ -335,9 +335,11 @@ impl Pipeline {
                 if !cfg.enabled {
                     continue;
                 }
+
+                let aimed = rule.with_recipients(&cfg.channel);
                 let outcome = s2l_notify::deliver(
                     &self.client,
-                    &cfg.channel,
+                    aimed.as_ref(),
                     &payload,
                     s2l_notify::DEFAULT_ATTEMPTS,
                 )
@@ -372,6 +374,8 @@ impl Pipeline {
                                 rule: rule.name.clone(),
                                 subject: job.subject.clone(),
                                 payload: payload.clone(),
+
+                                email_to: rule.email_to.clone(),
                             }),
                             job.at,
                             outcome.attempts,
@@ -580,7 +584,7 @@ impl Pipeline {
     async fn send_queued(&self, p: &mut Pending) -> Result<u64, Verdict> {
         match &mut p.item {
             Item::Notify(n) => {
-                let (ch, name) = {
+                let (mut ch, name) = {
                     let state = self.state.load_full();
                     let Some(cfg) = state.channel(n.channel) else {
                         return Err(Verdict::GiveUp("the channel was deleted".into()));
@@ -590,6 +594,8 @@ impl Pipeline {
                     }
                     (cfg.channel.clone(), cfg.name.clone())
                 };
+
+                state::apply_recipients(&mut ch, &n.email_to);
                 n.channel_name = name;
                 n.kind = ch.kind();
 
@@ -924,6 +930,7 @@ mod tests {
             title: "{{subject}}".into(),
             body: "{{body}}".into(),
             cooldown: 0,
+            email_to: vec![],
         }
     }
 
@@ -935,6 +942,7 @@ mod tests {
             rule: "all".into(),
             subject: "temperature".into(),
             payload: s2l_notify::Payload::default(),
+            email_to: vec![],
         })
     }
 
@@ -1047,6 +1055,102 @@ mod tests {
             left.attempts, 4,
             "the count has to keep going up across retries: the history says \
              how many times we really tried"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    async fn fake_smtp() -> (u16, tokio::task::JoinHandle<Vec<String>>) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let (r, mut w) = sock.into_split();
+            let mut r = BufReader::new(r);
+            let mut rcpt = Vec::new();
+            w.write_all(b"220 fake ESMTP\r\n").await.unwrap();
+            loop {
+                let mut line = String::new();
+                if r.read_line(&mut line).await.unwrap() == 0 {
+                    break;
+                }
+                let up = line.trim_end().to_ascii_uppercase();
+                if let Some(a) = up
+                    .strip_prefix("RCPT TO:<")
+                    .and_then(|a| a.strip_suffix('>'))
+                {
+                    rcpt.push(a.to_ascii_lowercase());
+                }
+                if up.starts_with("EHLO") {
+                    w.write_all(b"250-fake\r\n250 8BITMIME\r\n").await.unwrap();
+                } else if up == "DATA" {
+                    w.write_all(b"354 go ahead\r\n").await.unwrap();
+                    loop {
+                        let mut l = String::new();
+                        if r.read_line(&mut l).await.unwrap() == 0 || l == ".\r\n" {
+                            break;
+                        }
+                    }
+                    w.write_all(b"250 queued\r\n").await.unwrap();
+                } else if up == "QUIT" {
+                    w.write_all(b"221 bye\r\n").await.unwrap();
+                    break;
+                } else {
+                    w.write_all(b"250 ok\r\n").await.unwrap();
+                }
+            }
+            rcpt
+        });
+        (port, handle)
+    }
+
+    fn mailbox_channel(id: u32, port: u16) -> crate::state::ChannelCfg {
+        crate::state::ChannelCfg {
+            id,
+            name: "值班邮箱".into(),
+            enabled: true,
+            channel: s2l_notify::Channel::Email {
+                server: "127.0.0.1".into(),
+                port,
+                encryption: s2l_notify::EmailTls::None,
+                username: String::new(),
+                password: String::new(),
+                from: "alerts@idc.local".into(),
+                to: vec!["default@example.com".into()],
+                skip_verify: false,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn a_queued_email_still_goes_to_the_people_the_rule_named() {
+        let dir = tmpdir("retry-rcpt");
+        let (port, server) = fake_smtp().await;
+        let mut state = State::default();
+        state.channels.push(mailbox_channel(7, port));
+        let p = pipeline(&dir, state);
+
+        p.enqueue(
+            Item::Notify(QueuedNotify {
+                channel: 7,
+                channel_name: "值班邮箱".into(),
+                kind: "email",
+                rule: "UPS".into(),
+                subject: "battery low".into(),
+                payload: s2l_notify::Payload::default(),
+                email_to: vec!["boss@example.com".into()],
+            }),
+            1_000,
+            1,
+            "connection refused".into(),
+        );
+
+        let pass = p.flush().await;
+        assert_eq!(pass.sent, 1, "the mailbox is up now");
+        assert_eq!(
+            server.await.unwrap(),
+            ["boss@example.com"],
+            "the rule's recipients must survive the trip through the queue"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
