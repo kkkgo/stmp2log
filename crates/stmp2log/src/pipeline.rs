@@ -10,6 +10,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::config::Settings;
 use crate::log;
 use crate::push;
+use crate::retry::{self, Item, Pending, QueuedNotify, QueuedPush};
 use crate::state::{self, State, Vars};
 
 const NOTIFY_LOG_CAP: usize = 200;
@@ -25,6 +26,19 @@ pub struct NotifyLog {
     pub error: String,
     pub attempts: usize,
     pub took_ms: u64,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry: Option<Retry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Retry {
+    Queued,
+
+    Resent,
+
+    Dropped,
 }
 
 pub struct Pipeline {
@@ -39,6 +53,8 @@ pub struct Pipeline {
 
     cooldowns: Mutex<HashMap<u32, Instant>>,
     notify_log: Mutex<std::collections::VecDeque<NotifyLog>>,
+
+    retry: retry::Queue,
 
     base_url: String,
 }
@@ -62,6 +78,7 @@ impl Pipeline {
             push,
             cooldowns: Mutex::new(HashMap::new()),
             notify_log: Mutex::new(std::collections::VecDeque::new()),
+            retry: retry::Queue::default(),
             base_url,
         }
     }
@@ -252,15 +269,9 @@ impl Pipeline {
     pub async fn notify_job(self: Arc<Self>, job: NotifyJob) {
         self.notify(job).await
     }
-    async fn notify(self: Arc<Self>, job: NotifyJob) {
-        if let Some(payload) = &job.push {
-            match push::send(&self.client, &self.push.url, &self.push.pass, payload).await {
-                Ok(()) => log::debug(&format!("pushed #{} to {}", job.id, self.push.url)),
-                Err(e) => log::warn(&format!(
-                    "could not push #{} to {}: {e}",
-                    job.id, self.push.url
-                )),
-            }
+    async fn notify(self: Arc<Self>, mut job: NotifyJob) {
+        if let Some(payload) = job.push.take() {
+            self.forward(&job, payload).await;
         }
         let state = self.state.load_full();
         let group_name = state.group_name(job.group);
@@ -332,6 +343,7 @@ impl Pipeline {
                 )
                 .await;
 
+                let mut mark = None;
                 if outcome.ok {
                     log::info(&format!(
                         "notified {:?} via {} ({} ms)",
@@ -339,6 +351,8 @@ impl Pipeline {
                         cfg.channel.kind(),
                         outcome.took_ms
                     ));
+
+                    self.retry.recovered();
                 } else {
                     log::warn(&format!(
                         "notification to {:?} via {} failed after {} attempt(s): {}",
@@ -347,6 +361,23 @@ impl Pipeline {
                         outcome.attempts,
                         outcome.error
                     ));
+
+                    if outcome.retryable {
+                        mark = Some(Retry::Queued);
+                        self.enqueue(
+                            Item::Notify(QueuedNotify {
+                                channel: cfg.id,
+                                channel_name: cfg.name.clone(),
+                                kind: cfg.channel.kind(),
+                                rule: rule.name.clone(),
+                                subject: job.subject.clone(),
+                                payload: payload.clone(),
+                            }),
+                            job.at,
+                            outcome.attempts,
+                            outcome.error.clone(),
+                        );
+                    }
                 }
                 self.record(NotifyLog {
                     at: log::now_ms(),
@@ -358,8 +389,85 @@ impl Pipeline {
                     error: outcome.error,
                     attempts: outcome.attempts,
                     took_ms: outcome.took_ms,
+                    retry: mark,
                 });
             }
+        }
+    }
+
+    async fn forward(&self, job: &NotifyJob, payload: push::Payload) {
+        let started = Instant::now();
+        let err = match push::send(&self.client, &self.push.url, &self.push.pass, &payload).await {
+            Ok(()) => {
+                log::debug(&format!("pushed #{} to {}", job.id, self.push.url));
+                self.retry.recovered();
+
+                return;
+            }
+            Err(e) => e,
+        };
+        log::warn(&format!(
+            "could not push #{} to {}: {err}",
+            job.id, self.push.url
+        ));
+
+        let item = Item::Push(QueuedPush {
+            id: job.id,
+            subject: job.subject.clone(),
+            payload,
+        });
+        let mark = if err.retryable() {
+            self.enqueue(item, job.at, 1, err.to_string());
+            Retry::Queued
+        } else {
+            Retry::Dropped
+        };
+        self.record(NotifyLog {
+            at: log::now_ms(),
+            rule: String::new(),
+            channel: self.push_label(),
+            kind: "push",
+            subject: job.subject.clone(),
+            ok: false,
+            error: err.to_string(),
+            attempts: 1,
+            took_ms: started.elapsed().as_millis() as u64,
+            retry: Some(mark),
+        });
+    }
+
+    fn push_label(&self) -> String {
+        let host = self
+            .push
+            .url
+            .rsplit("://")
+            .next()
+            .unwrap_or("")
+            .split('/')
+            .next()
+            .unwrap_or("");
+        if host.is_empty() {
+            "push".into()
+        } else {
+            host.to_string()
+        }
+    }
+
+    fn enqueue(&self, item: Item, at: i64, attempts: usize, error: String) {
+        let max = self.settings.load().retry_queue;
+        let what = item.describe();
+        let evicted = self.retry.push(item, at, attempts, error, max);
+        log::debug(&format!(
+            "queued {what} for retry, {} waiting",
+            self.retry.len()
+        ));
+        for p in evicted {
+            log::warn(&format!(
+                "the retry queue is full ({max}), dropped {}: {}",
+                p.item.describe(),
+                p.error
+            ));
+            self.record(self.log_of(&p, false, p.error.clone(), 0, Retry::Dropped));
         }
     }
 
@@ -391,6 +499,147 @@ impl Pipeline {
         log.iter().rev().cloned().collect()
     }
 
+    pub fn retry_status(&self) -> retry::Status {
+        self.retry.status(self.settings.load().retry_queue)
+    }
+
+    pub fn retry_now(&self) {
+        self.retry.kick();
+    }
+
+    pub fn trim_retry(&self, max: usize) {
+        for p in self.retry.trim(max) {
+            log::warn(&format!(
+                "the retry queue limit is now {max}, dropped {}: {}",
+                p.item.describe(),
+                p.error
+            ));
+            self.record(self.log_of(&p, false, p.error.clone(), 0, Retry::Dropped));
+        }
+    }
+
+    pub async fn run_retry(self: Arc<Self>) {
+        let mut delay = retry::FIRST_DELAY;
+        loop {
+            if self.retry.is_empty() {
+                self.retry.wait_for_work().await;
+                delay = retry::FIRST_DELAY;
+            }
+            self.retry.wait_backoff(delay).await;
+            let pass = self.flush().await;
+
+            delay = if pass.stalled && pass.sent == 0 {
+                retry::next_delay(delay)
+            } else {
+                retry::FIRST_DELAY
+            };
+        }
+    }
+
+    async fn flush(&self) -> Pass {
+        let mut sent = 0usize;
+        while let Some(mut p) = self.retry.pop() {
+            p.attempts += 1;
+            match self.send_queued(&mut p).await {
+                Ok(took_ms) => {
+                    sent += 1;
+                    log::info(&format!(
+                        "re-sent {}, {}s after the alert ({} attempt(s))",
+                        p.item.describe(),
+                        (log::now_ms() - p.at).max(0) / 1000,
+                        p.attempts
+                    ));
+                    self.record(self.log_of(&p, true, String::new(), took_ms, Retry::Resent));
+                }
+                Err(Verdict::Later(e)) => {
+                    p.error = e;
+                    log::debug(&format!(
+                        "{} is still failing ({}), leaving it in the queue",
+                        p.item.describe(),
+                        p.error
+                    ));
+                    self.retry.requeue(p);
+
+                    return Pass {
+                        sent,
+                        stalled: true,
+                    };
+                }
+                Err(Verdict::GiveUp(e)) => {
+                    log::warn(&format!("giving up on {}: {e}", p.item.describe()));
+                    self.record(self.log_of(&p, false, e, 0, Retry::Dropped));
+                }
+            }
+        }
+        Pass {
+            sent,
+            stalled: false,
+        }
+    }
+
+    async fn send_queued(&self, p: &mut Pending) -> Result<u64, Verdict> {
+        match &mut p.item {
+            Item::Notify(n) => {
+                let (ch, name) = {
+                    let state = self.state.load_full();
+                    let Some(cfg) = state.channel(n.channel) else {
+                        return Err(Verdict::GiveUp("the channel was deleted".into()));
+                    };
+                    if !cfg.enabled {
+                        return Err(Verdict::GiveUp("the channel was disabled".into()));
+                    }
+                    (cfg.channel.clone(), cfg.name.clone())
+                };
+                n.channel_name = name;
+                n.kind = ch.kind();
+
+                let out = s2l_notify::deliver(&self.client, &ch, &n.payload, 1).await;
+                if out.ok {
+                    return Ok(out.took_ms);
+                }
+                Err(if out.retryable {
+                    Verdict::Later(out.error)
+                } else {
+                    Verdict::GiveUp(out.error)
+                })
+            }
+            Item::Push(q) => {
+                let started = Instant::now();
+                let r = push::resend(
+                    &self.client,
+                    &self.push.url,
+                    &self.push.pass,
+                    &mut q.payload,
+                    log::now_ms(),
+                )
+                .await;
+                match r {
+                    Ok(()) => Ok(started.elapsed().as_millis() as u64),
+                    Err(e) if e.retryable() => Err(Verdict::Later(e.to_string())),
+                    Err(e) => Err(Verdict::GiveUp(e.to_string())),
+                }
+            }
+        }
+    }
+
+    fn log_of(&self, p: &Pending, ok: bool, error: String, took_ms: u64, mark: Retry) -> NotifyLog {
+        NotifyLog {
+            at: log::now_ms(),
+            rule: p.item.rule(),
+            channel: match &p.item {
+                Item::Notify(n) => n.channel_name.clone(),
+                Item::Push(_) => self.push_label(),
+            },
+            kind: p.item.kind(),
+            subject: p.item.subject().to_string(),
+            ok,
+            error,
+            attempts: p.attempts,
+            took_ms,
+            retry: Some(mark),
+        }
+    }
+
     pub async fn test_channel(&self, ch: &s2l_notify::Channel) -> s2l_notify::Outcome {
         let payload = s2l_notify::Payload {
             title: "stmp2log test".into(),
@@ -402,6 +651,18 @@ impl Pipeline {
         };
         s2l_notify::deliver(&self.client, ch, &payload, 1).await
     }
+}
+
+struct Pass {
+    sent: usize,
+
+    stalled: bool,
+}
+
+enum Verdict {
+    Later(String),
+
+    GiveUp(String),
 }
 
 pub struct NotifyJob {
@@ -625,6 +886,7 @@ mod tests {
                 error: String::new(),
                 attempts: 1,
                 took_ms: 0,
+                retry: None,
             });
         }
         let log = p.notify_log();
@@ -634,6 +896,171 @@ mod tests {
             format!("r{}", NOTIFY_LOG_CAP + 19),
             "newest first"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn unreachable_channel(id: u32) -> crate::state::ChannelCfg {
+        crate::state::ChannelCfg {
+            id,
+            name: "phone".into(),
+            enabled: true,
+            channel: s2l_notify::Channel::Ntfy {
+                server: "http://127.0.0.1:9".into(),
+                topic: "alerts".into(),
+                priority: 5,
+                auth: s2l_notify::NtfyAuth::None,
+                tags: vec![],
+            },
+        }
+    }
+
+    fn notify_everything(channel: u32) -> crate::state::NotifyRule {
+        crate::state::NotifyRule {
+            id: 1,
+            name: "all".into(),
+            enabled: true,
+            matcher: s2l_store::Matcher::default(),
+            channels: vec![channel],
+            title: "{{subject}}".into(),
+            body: "{{body}}".into(),
+            cooldown: 0,
+        }
+    }
+
+    fn queued_notify(channel: u32) -> Item {
+        Item::Notify(QueuedNotify {
+            channel,
+            channel_name: "phone".into(),
+            kind: "ntfy",
+            rule: "all".into(),
+            subject: "temperature".into(),
+            payload: s2l_notify::Payload::default(),
+        })
+    }
+
+    #[tokio::test]
+    async fn a_notification_that_cannot_go_out_now_waits_for_the_network() {
+        let dir = tmpdir("retry-queue");
+        let mut state = State::default();
+        state.channels.push(unreachable_channel(7));
+        state.rules.push(notify_everything(7));
+        let p = pipeline(&dir, state);
+
+        let job = p
+            .ingest(delivered("ups@idc.local", "Subject: hot\r\n\r\n48C"))
+            .unwrap();
+        p.clone().notify_job(job).await;
+
+        let s = p.retry_status();
+        assert_eq!(
+            s.pending, 1,
+            "a connection failure must not be the end of it"
+        );
+        assert_eq!(s.notify, 1);
+        assert_eq!(s.max, 0, "the default is no limit at all");
+
+        let log = p.notify_log();
+        assert_eq!(
+            log[0].retry,
+            Some(Retry::Queued),
+            "the history must say it is still coming, not just 'failed'"
+        );
+        assert!(!log[0].ok);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_misconfigured_channel_is_never_queued() {
+        let dir = tmpdir("retry-badurl");
+        let mut state = State::default();
+        let mut ch = unreachable_channel(7);
+        ch.channel = s2l_notify::Channel::Feishu {
+            webhook: "open.feishu.cn/missing-scheme".into(),
+            secret: String::new(),
+        };
+        state.channels.push(ch);
+        state.rules.push(notify_everything(7));
+        let p = pipeline(&dir, state);
+
+        let job = p
+            .ingest(delivered("a@b.c", "Subject: x\r\n\r\nbody"))
+            .unwrap();
+        p.clone().notify_job(job).await;
+
+        assert_eq!(p.retry_status().pending, 0);
+        assert_eq!(p.notify_log()[0].retry, None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_alert_dropped_by_a_full_queue_still_leaves_a_record() {
+        let dir = tmpdir("retry-full");
+        let p = pipeline_with(
+            &dir,
+            State::default(),
+            Settings {
+                retry_queue: 1,
+                ..Settings::default_for_test()
+            },
+        );
+        p.enqueue(queued_notify(7), 1_000, 3, "no route to host".into());
+        p.enqueue(queued_notify(7), 2_000, 3, "no route to host".into());
+
+        let s = p.retry_status();
+        assert_eq!(s.pending, 1, "the newest one stays");
+        assert_eq!(s.dropped, 1);
+        assert_eq!(p.notify_log()[0].retry, Some(Retry::Dropped));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_queued_entry_whose_channel_is_gone_does_not_block_the_rest() {
+        let dir = tmpdir("retry-gone");
+        let p = pipeline(&dir, State::default());
+        p.enqueue(queued_notify(99), 1_000, 3, "no route to host".into());
+
+        let pass = p.flush().await;
+        assert_eq!(pass.sent, 0);
+        assert!(!pass.stalled, "a deleted channel is not a network problem");
+        assert_eq!(p.retry_status().pending, 0);
+
+        let log = p.notify_log();
+        assert_eq!(log[0].retry, Some(Retry::Dropped));
+        assert!(log[0].error.contains("deleted"), "error: {}", log[0].error);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_channel_that_is_still_down_keeps_its_place_in_the_queue() {
+        let dir = tmpdir("retry-stall");
+        let mut state = State::default();
+        state.channels.push(unreachable_channel(7));
+        let p = pipeline(&dir, state);
+        p.enqueue(queued_notify(7), 1_000, 3, "no route to host".into());
+
+        let pass = p.flush().await;
+        assert!(pass.stalled);
+        assert_eq!(p.retry_status().pending, 1);
+
+        let left = p.retry.pop().expect("it must still be queued");
+        assert_eq!(
+            left.attempts, 4,
+            "the count has to keep going up across retries: the history says \
+             how many times we really tried"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn lowering_the_limit_drops_the_oldest_right_away() {
+        let dir = tmpdir("retry-trim");
+        let p = pipeline(&dir, State::default());
+        for i in 0..5 {
+            p.enqueue(queued_notify(7), i, 1, "timed out".into());
+        }
+        p.trim_retry(2);
+        assert_eq!(p.retry_status().pending, 2);
+        assert_eq!(p.retry_status().dropped, 3);
         std::fs::remove_dir_all(&dir).ok();
     }
 

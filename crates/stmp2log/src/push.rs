@@ -23,6 +23,18 @@ pub enum PushError {
     Rejected(u16, String),
 }
 
+impl PushError {
+    pub fn retryable(&self) -> bool {
+        match self {
+            PushError::Http(s2l_notify::HttpError::BadUrl(_)) => false,
+
+            PushError::Http(_) => true,
+            PushError::Rejected(status, _) => *status == 429 || (500..600).contains(status),
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Payload {
     pub hostname: String,
@@ -125,6 +137,17 @@ pub async fn send(
     Ok(())
 }
 
+pub async fn resend(
+    client: &s2l_notify::Client,
+    push_url: &str,
+    web_pass: &str,
+    payload: &mut Payload,
+    now_ms: i64,
+) -> Result<(), PushError> {
+    payload.ts = now_ms;
+    send(client, push_url, web_pass, payload).await
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     pub url: String,
@@ -222,6 +245,43 @@ mod tests {
         let b = seal("pw", &payload(1000)).unwrap();
         assert_ne!(a, b);
         assert_ne!(a[..aead::NONCE_LEN], b[..aead::NONCE_LEN]);
+    }
+
+    #[test]
+    fn only_transient_push_failures_are_worth_queueing() {
+        assert!(!PushError::Rejected(401, "push rejected".into()).retryable());
+        assert!(!PushError::Rejected(403, String::new()).retryable());
+        assert!(!PushError::Rejected(400, "timestamp".into()).retryable());
+        assert!(!PushError::Skew(600_000).retryable());
+        assert!(
+            !PushError::Http(s2l_notify::HttpError::BadUrl("stmp.example.com".into())).retryable(),
+            "a malformed push_url will never start working on its own"
+        );
+
+        assert!(PushError::Rejected(502, String::new()).retryable());
+        assert!(PushError::Rejected(429, String::new()).retryable());
+        assert!(
+            PushError::Http(s2l_notify::HttpError::Resolve("stmp.example.com".into())).retryable()
+        );
+        assert!(
+            PushError::Http(s2l_notify::HttpError::Timeout("POST /api/push".into())).retryable()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_resent_payload_carries_a_fresh_timestamp() {
+        let client = s2l_notify::Client::new(std::time::Duration::from_millis(300));
+        let mut p = payload(1000);
+        let much_later = 1000 + MAX_SKEW * 10;
+
+        let _ = resend(&client, "http://127.0.0.1:9", "pw", &mut p, much_later).await;
+
+        assert_eq!(p.ts, much_later, "the queued payload must be re-stamped");
+        let sealed = seal("pw", &p).unwrap();
+        assert!(
+            open("pw", &sealed, much_later).is_ok(),
+            "the far side must accept a payload that waited out a long outage"
+        );
     }
 
     #[test]

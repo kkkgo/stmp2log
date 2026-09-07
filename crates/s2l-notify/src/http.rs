@@ -68,6 +68,14 @@ impl Client {
         }
     }
 
+    pub(crate) fn tls(&self) -> Arc<rustls::ClientConfig> {
+        self.tls.clone()
+    }
+
+    pub(crate) fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
     pub async fn send(&self, req: Request<'_>) -> Result<Response, HttpError> {
         let what = format!("{} {}", req.method, req.url);
         tokio::time::timeout(self.timeout, self.follow(req))

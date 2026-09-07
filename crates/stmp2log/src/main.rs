@@ -12,6 +12,7 @@ mod config;
 mod log;
 mod pipeline;
 mod push;
+mod retry;
 mod state;
 
 const VERSION: &str = match option_env!("STMP2LOG_VERSION") {
@@ -48,7 +49,10 @@ Configuration file (every key is optional; see the readme):
   max_days=0                  keep at most this many days; 0 disables
   keep_raw=0                  store the raw message source
   keep_attachments=0          store attachment contents
-    (these four can also be changed in the web UI, which writes them back here)
+  retry_queue=0               hold at most this many undelivered alerts while
+                              the network is down and send them once it is
+                              back; 0 (the default) means no limit
+    (these five can also be changed in the web UI, which writes them back here)
 ";
 
 fn main() {
@@ -192,6 +196,13 @@ async fn serve(
         },
     ));
     tokio::spawn(pipe.clone().run(rx));
+
+    tokio::spawn(pipe.clone().run_retry());
+
+    log::info(&match cfg.retry_queue {
+        0 => "undelivered alerts are queued until the network is back, with no limit".to_string(),
+        n => format!("at most {n} undelivered alert(s) are queued while the network is down"),
+    });
 
     start_smtp(&cfg, tx).await?;
 

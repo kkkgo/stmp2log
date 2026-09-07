@@ -4,9 +4,10 @@ use std::time::Duration;
 pub mod http;
 mod providers;
 mod sign;
+mod smtp;
 
 pub use http::{Client, HttpError};
-pub use providers::{Built, Channel, NtfyAuth, Payload, build, check};
+pub use providers::{Built, Channel, EmailTls, NtfyAuth, Payload, build, check};
 
 pub const DEFAULT_ATTEMPTS: usize = 3;
 
@@ -21,6 +22,8 @@ pub struct Outcome {
 
     pub status: u16,
     pub took_ms: u64,
+
+    pub retryable: bool,
 }
 
 pub async fn deliver(client: &Client, ch: &Channel, p: &Payload, attempts: usize) -> Outcome {
@@ -31,9 +34,34 @@ pub async fn deliver(client: &Client, ch: &Channel, p: &Payload, attempts: usize
 
     let mut used = 0usize;
 
+    let mut last_retryable = false;
+
     for attempt in 1..=attempts {
         used = attempt;
-        let built = providers::build(ch, p, now_ms());
+        let ok = |status: u16| Outcome {
+            ok: true,
+            error: String::new(),
+            attempts: attempt,
+            status,
+            took_ms: started.elapsed().as_millis() as u64,
+            retryable: false,
+        };
+
+        let Some(built) = providers::build(ch, p, now_ms()) else {
+            match smtp::send(client, ch, p, now_ms()).await {
+                Ok(()) => return ok(0),
+                Err(e) => {
+                    last_error = e.to_string();
+                    last_retryable = e.retryable();
+                    if !last_retryable || attempt == attempts {
+                        break;
+                    }
+                    backoff(attempt).await;
+                    continue;
+                }
+            }
+        };
+
         let headers: Vec<(&str, String)> =
             built.headers.iter().map(|(k, v)| (*k, v.clone())).collect();
 
@@ -48,15 +76,7 @@ pub async fn deliver(client: &Client, ch: &Channel, p: &Payload, attempts: usize
             Ok(resp) => {
                 last_status = resp.status;
                 match providers::check(ch, &resp) {
-                    Ok(()) => {
-                        return Outcome {
-                            ok: true,
-                            error: String::new(),
-                            attempts: attempt,
-                            status: resp.status,
-                            took_ms: started.elapsed().as_millis() as u64,
-                        };
-                    }
+                    Ok(()) => return ok(resp.status),
                     Err(e) => (is_retryable_status(resp.status), e),
                 }
             }
@@ -65,12 +85,11 @@ pub async fn deliver(client: &Client, ch: &Channel, p: &Payload, attempts: usize
         };
 
         last_error = err;
+        last_retryable = retryable;
         if !retryable || attempt == attempts {
             break;
         }
-
-        let base = 500u64 << (attempt - 1).min(4);
-        tokio::time::sleep(Duration::from_millis(base + jitter_ms(base / 2))).await;
+        backoff(attempt).await;
     }
 
     Outcome {
@@ -79,7 +98,13 @@ pub async fn deliver(client: &Client, ch: &Channel, p: &Payload, attempts: usize
         attempts: used,
         status: last_status,
         took_ms: started.elapsed().as_millis() as u64,
+        retryable: last_retryable,
     }
+}
+
+async fn backoff(attempt: usize) {
+    let base = 500u64 << (attempt - 1).min(4);
+    tokio::time::sleep(Duration::from_millis(base + jitter_ms(base / 2))).await;
 }
 
 fn is_retryable_status(status: u16) -> bool {
@@ -145,6 +170,10 @@ mod tests {
         assert!(!out.ok);
         assert_eq!(out.attempts, 1, "a malformed URL must not be retried");
         assert!(out.error.contains("bad url"), "error was {}", out.error);
+        assert!(
+            !out.retryable,
+            "a malformed URL must not be queued for later either"
+        );
     }
 
     #[tokio::test]
@@ -161,5 +190,9 @@ mod tests {
         assert!(!out.ok);
         assert!(!out.error.is_empty());
         assert_eq!(out.status, 0);
+        assert!(
+            out.retryable,
+            "a connection failure is exactly what the retry queue is for"
+        );
     }
 }

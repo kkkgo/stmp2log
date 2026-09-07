@@ -95,6 +95,50 @@ pub enum Channel {
         sign_name: String,
         template_code: String,
     },
+
+    Email {
+        server: String,
+
+        #[serde(default)]
+        port: u16,
+        #[serde(default)]
+        encryption: EmailTls,
+
+        #[serde(default)]
+        username: String,
+        #[serde(default)]
+        password: String,
+
+        #[serde(default)]
+        from: String,
+
+        #[serde(default)]
+        to: Vec<String>,
+
+        #[serde(default)]
+        skip_verify: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EmailTls {
+    #[default]
+    None,
+
+    StartTls,
+
+    Tls,
+}
+
+impl EmailTls {
+    pub fn default_port(self) -> u16 {
+        match self {
+            EmailTls::None => 25,
+            EmailTls::StartTls => 587,
+            EmailTls::Tls => 465,
+        }
+    }
 }
 
 fn ntfy_default_server() -> String {
@@ -120,6 +164,7 @@ impl Channel {
             Channel::WeCom { .. } => "wecom",
             Channel::ServerChan { .. } => "serverchan",
             Channel::AliyunSms { .. } => "aliyun_sms",
+            Channel::Email { .. } => "email",
         }
     }
 }
@@ -143,8 +188,8 @@ impl Built {
     }
 }
 
-pub fn build(ch: &Channel, p: &Payload, now_ms: i64) -> Built {
-    match ch {
+pub fn build(ch: &Channel, p: &Payload, now_ms: i64) -> Option<Built> {
+    let built = match ch {
         Channel::Ntfy {
             server,
             topic,
@@ -356,7 +401,10 @@ pub fn build(ch: &Channel, p: &Payload, now_ms: i64) -> Built {
                 body: form.into_bytes(),
             }
         }
-    }
+
+        Channel::Email { .. } => return None,
+    };
+    Some(built)
 }
 
 pub fn check(ch: &Channel, resp: &http::Response) -> Result<(), String> {
@@ -409,6 +457,8 @@ pub fn check(ch: &Channel, resp: &http::Response) -> Result<(), String> {
         }
 
         Channel::Ntfy { .. } | Channel::Bark { .. } | Channel::Telegram { .. } => {}
+
+        Channel::Email { .. } => {}
     }
 
     if !(200..300).contains(&resp.status) {
@@ -468,7 +518,7 @@ fn iso8601(ms: i64) -> String {
     )
 }
 
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
+pub(crate) fn civil_from_days(z: i64) -> (i64, i64, i64) {
     let z = z + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
     let doe = z - era * 146097;
@@ -491,6 +541,10 @@ fn nonce(now_ms: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn built(ch: &Channel, p: &Payload, now_ms: i64) -> Built {
+        super::build(ch, p, now_ms).expect("this channel speaks HTTP")
+    }
 
     const NOW: i64 = 1_788_353_161_000;
 
@@ -515,7 +569,7 @@ mod tests {
             auth: NtfyAuth::None,
             tags: vec!["rotating_light".into()],
         };
-        let b = build(&ch, &payload(), NOW);
+        let b = built(&ch, &payload(), NOW);
         assert_eq!(b.method, "POST");
         assert_eq!(b.url, "https://ntfy.sh");
         let j = body_json(&b);
@@ -535,7 +589,7 @@ mod tests {
             auth: NtfyAuth::None,
             tags: vec![],
         };
-        assert_eq!(build(&ch, &payload(), NOW).url, "http://10.0.0.9:8080");
+        assert_eq!(built(&ch, &payload(), NOW).url, "http://10.0.0.9:8080");
     }
 
     #[test]
@@ -550,7 +604,7 @@ mod tests {
             },
             tags: vec![],
         };
-        let h = build(&basic, &payload(), NOW).headers;
+        let h = built(&basic, &payload(), NOW).headers;
         assert!(h.contains(&("Authorization", "Basic dTpw".to_string())));
 
         let token = Channel::Ntfy {
@@ -562,7 +616,7 @@ mod tests {
             },
             tags: vec![],
         };
-        let h = build(&token, &payload(), NOW).headers;
+        let h = built(&token, &payload(), NOW).headers;
         assert!(h.contains(&("Authorization", "Bearer tk_x".to_string())));
     }
 
@@ -576,7 +630,7 @@ mod tests {
         };
         let mut p = payload();
         p.title = "/dev/sda failed".into();
-        let b = build(&ch, &p, NOW);
+        let b = built(&ch, &p, NOW);
         assert_eq!(b.url, "https://api.day.app/DEVICEKEY");
         let j = body_json(&b);
         assert_eq!(j["title"], "/dev/sda failed");
@@ -593,7 +647,7 @@ mod tests {
             thread_id: String::new(),
             silent: true,
         };
-        let b = build(&ch, &payload(), NOW);
+        let b = built(&ch, &payload(), NOW);
         assert_eq!(b.url, "https://api.telegram.org/bot123:ABC/sendMessage");
         let j = body_json(&b);
         assert_eq!(j["chat_id"], "-100777");
@@ -613,7 +667,7 @@ mod tests {
             at_mobiles: vec!["13800138000".into()],
             at_all: false,
         };
-        let b = build(&ch, &payload(), NOW);
+        let b = built(&ch, &payload(), NOW);
         assert!(
             b.url
                 .contains("?access_token=TOKEN&timestamp=1788353161000&sign=")
@@ -637,7 +691,7 @@ mod tests {
             at_mobiles: vec![],
             at_all: true,
         };
-        let b = build(&ch, &payload(), NOW);
+        let b = built(&ch, &payload(), NOW);
         assert_eq!(b.url, "https://oapi.dingtalk.com/robot/send?access_token=T");
         assert_eq!(body_json(&b)["at"]["isAtAll"], true);
     }
@@ -648,7 +702,7 @@ mod tests {
             webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/xyz".into(),
             secret: "FSsecret456".into(),
         };
-        let j = body_json(&build(&ch, &payload(), NOW));
+        let j = body_json(&built(&ch, &payload(), NOW));
         assert_eq!(
             j["timestamp"], "1788353161",
             "feishu wants seconds, not milliseconds"
@@ -663,7 +717,7 @@ mod tests {
             webhook: "https://open.feishu.cn/x".into(),
             secret: String::new(),
         };
-        let j = body_json(&build(&ch, &payload(), NOW));
+        let j = body_json(&built(&ch, &payload(), NOW));
         assert!(j.get("sign").is_none());
         assert!(j.get("timestamp").is_none());
     }
@@ -675,7 +729,7 @@ mod tests {
             mentioned_mobiles: vec![],
         };
         assert_eq!(
-            build(&bare, &payload(), NOW).url,
+            built(&bare, &payload(), NOW).url,
             "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc-123"
         );
 
@@ -683,7 +737,7 @@ mod tests {
             key: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc-123".into(),
             mentioned_mobiles: vec!["13800138000".into()],
         };
-        let b = build(&full, &payload(), NOW);
+        let b = built(&full, &payload(), NOW);
         assert_eq!(
             b.url,
             "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc-123"
@@ -700,7 +754,7 @@ mod tests {
             sendkey: "sctp1234tABCDEFG".into(),
         };
         assert_eq!(
-            build(&v3, &payload(), NOW).url,
+            built(&v3, &payload(), NOW).url,
             "https://1234.push.ft07.com/send/sctp1234tABCDEFG.send"
         );
 
@@ -708,7 +762,7 @@ mod tests {
             sendkey: "SCT123456xyz".into(),
         };
         assert_eq!(
-            build(&legacy, &payload(), NOW).url,
+            built(&legacy, &payload(), NOW).url,
             "https://sctapi.ftqq.com/SCT123456xyz.send"
         );
     }
@@ -734,7 +788,7 @@ mod tests {
             sign_name: "test".into(),
             template_code: "SMS_1".into(),
         };
-        let b = build(&ch, &payload(), NOW);
+        let b = built(&ch, &payload(), NOW);
         assert_eq!(b.url, "https://dysmsapi.aliyuncs.com/");
         assert_eq!(
             b.headers[0].1, "application/x-www-form-urlencoded",

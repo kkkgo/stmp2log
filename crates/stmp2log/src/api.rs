@@ -108,6 +108,12 @@ impl Handler {
             ("DELETE", ["rules", id]) => self.delete_rule(id),
 
             ("GET", ["notifications"]) => respond::ok(&json_of(&self.pipeline.notify_log())),
+            ("GET", ["retry"]) => respond::ok(&json_of(&self.pipeline.retry_status())),
+
+            ("POST", ["retry"]) => {
+                self.pipeline.retry_now();
+                respond::ok(&json_of(&self.pipeline.retry_status()))
+            }
             ("POST", ["regroup"]) => self.regroup().await,
             ("POST", ["push"]) => self.accept_push(&req).await,
 
@@ -295,7 +301,7 @@ impl Handler {
         let Ok(want) = req.json::<Settings>() else {
             return respond::error(
                 400,
-                "expected {max_entries, max_days, keep_raw, keep_attachments}",
+                "expected {max_entries, max_days, keep_raw, keep_attachments, retry_queue}",
             );
         };
         if want.max_entries == 0 {
@@ -310,6 +316,8 @@ impl Handler {
         }
         self.settings.store(Arc::new(want));
         log::info(&format!("settings saved to {}", self.config_path.display()));
+
+        self.pipeline.trim_retry(want.retry_queue);
 
         let store = self.store.clone();
         let retention = want.retention();

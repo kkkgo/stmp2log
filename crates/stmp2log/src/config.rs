@@ -32,6 +32,8 @@ pub struct Config {
     pub max_days: u32,
     pub keep_raw: bool,
     pub keep_attachments: bool,
+
+    pub retry_queue: usize,
 }
 
 impl Default for Config {
@@ -53,9 +55,12 @@ impl Default for Config {
             max_days: 0,
             keep_raw: false,
             keep_attachments: false,
+            retry_queue: DEFAULT_RETRY_QUEUE,
         }
     }
 }
+
+pub const DEFAULT_RETRY_QUEUE: usize = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
@@ -63,6 +68,13 @@ pub struct Settings {
     pub max_days: u32,
     pub keep_raw: bool,
     pub keep_attachments: bool,
+
+    #[serde(default = "default_retry_queue")]
+    pub retry_queue: usize,
+}
+
+fn default_retry_queue() -> usize {
+    DEFAULT_RETRY_QUEUE
 }
 
 impl Settings {
@@ -84,6 +96,7 @@ impl Settings {
             ("max_days", self.max_days.to_string()),
             ("keep_raw", bool_to_ini(self.keep_raw)),
             ("keep_attachments", bool_to_ini(self.keep_attachments)),
+            ("retry_queue", self.retry_queue.to_string()),
         ]
     }
 }
@@ -95,6 +108,7 @@ impl Config {
             max_days: self.max_days,
             keep_raw: self.keep_raw,
             keep_attachments: self.keep_attachments,
+            retry_queue: self.retry_queue,
         }
     }
 }
@@ -215,6 +229,14 @@ pub fn parse(text: &str) -> Parsed {
             },
             "keep_raw" => cfg.keep_raw = parse_bool(value),
             "keep_attachments" => cfg.keep_attachments = parse_bool(value),
+
+            "retry_queue" => match value.parse::<usize>() {
+                Ok(n) => cfg.retry_queue = n,
+                _ => warnings.push(format!(
+                    "line {lineno}: retry_queue {value:?} is not a number, keeping {}",
+                    cfg.retry_queue
+                )),
+            },
             other => {
                 warnings.push(format!("line {lineno}: unknown setting {other:?}, ignored"));
             }
@@ -537,6 +559,23 @@ mod tests {
     }
 
     #[test]
+    fn the_retry_queue_is_unlimited_unless_a_number_is_given() {
+        assert_eq!(parse("").config.retry_queue, 0);
+        assert_eq!(parse("retry_queue=50\n").config.retry_queue, 50);
+
+        let p = parse("retry_queue=0\n");
+        assert_eq!(p.config.retry_queue, 0);
+        assert!(p.warnings.is_empty(), "warnings: {:?}", p.warnings);
+    }
+
+    #[test]
+    fn a_garbled_retry_queue_warns_instead_of_silently_picking_a_limit() {
+        let p = parse("retry_queue=ten\n");
+        assert_eq!(p.config.retry_queue, DEFAULT_RETRY_QUEUE);
+        assert!(p.warnings.iter().any(|w| w.contains("retry_queue")));
+    }
+
+    #[test]
     fn an_unknown_key_warns_but_does_not_stop_the_service() {
         let p = parse("stmp_listen=0.0.0.0:25\nweb_prot=8025\n");
         assert_eq!(p.config.stmp_listen, addr("0.0.0.0:25"));
@@ -656,6 +695,7 @@ mod tests {
             max_days: 45,
             keep_raw: true,
             keep_attachments: true,
+            retry_queue: 42,
         };
         update(&p, &want.as_ini()).unwrap();
         let got = parse(&std::fs::read_to_string(&p).unwrap())

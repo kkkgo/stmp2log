@@ -25,6 +25,7 @@ max_entries=${MAX_ENTRIES:-5000}
 max_days=${MAX_DAYS:-0}
 keep_raw=${KEEP_RAW:-0}
 keep_attachments=${KEEP_ATTACHMENTS:-0}
+retry_queue=${RETRY_QUEUE:-0}
 EOF
 fi
 
