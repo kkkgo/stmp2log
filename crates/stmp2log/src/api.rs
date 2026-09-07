@@ -397,8 +397,9 @@ impl Handler {
         }
     }
     fn add_group(&self, req: &ApiReq) -> Reply {
-        let Ok(mut g) = req.json::<Group>() else {
-            return respond::error(400, "expected a group object");
+        let mut g = match req.json::<Group>() {
+            Ok(g) => g,
+            Err(e) => return bad_body("a group object", &e),
         };
         self.mutate(move |s| {
             g.id = s.take_id();
@@ -408,8 +409,12 @@ impl Handler {
     }
 
     fn update_group(&self, id: &str, req: &ApiReq) -> Reply {
-        let (Ok(id), Ok(g)) = (id.parse::<u32>(), req.json::<Group>()) else {
-            return respond::error(400, "expected a numeric id and a group object");
+        let Ok(id) = id.parse::<u32>() else {
+            return respond::error(400, "the group id must be a number");
+        };
+        let g = match req.json::<Group>() {
+            Ok(g) => g,
+            Err(e) => return bad_body("a group object", &e),
         };
         self.mutate(move |s| match s.groups.iter_mut().find(|x| x.id == id) {
             Some(slot) => {
@@ -474,8 +479,9 @@ impl Handler {
     }
 
     fn add_channel(&self, req: &ApiReq) -> Reply {
-        let Ok(mut c) = req.json::<ChannelCfg>() else {
-            return respond::error(400, "expected a channel object");
+        let mut c = match req.json::<ChannelCfg>() {
+            Ok(c) => c,
+            Err(e) => return bad_body("a channel object", &e),
         };
         self.mutate(move |s| {
             c.id = s.take_id();
@@ -485,8 +491,12 @@ impl Handler {
     }
 
     fn update_channel(&self, id: &str, req: &ApiReq) -> Reply {
-        let (Ok(id), Ok(c)) = (id.parse::<u32>(), req.json::<ChannelCfg>()) else {
-            return respond::error(400, "expected a numeric id and a channel object");
+        let Ok(id) = id.parse::<u32>() else {
+            return respond::error(400, "the channel id must be a number");
+        };
+        let c = match req.json::<ChannelCfg>() {
+            Ok(c) => c,
+            Err(e) => return bad_body("a channel object", &e),
         };
         self.mutate(move |s| match s.channels.iter_mut().find(|x| x.id == id) {
             Some(slot) => {
@@ -527,16 +537,18 @@ impl Handler {
     }
 
     async fn test_unsaved(&self, req: &ApiReq) -> Reply {
-        let Ok(ch) = req.json::<s2l_notify::Channel>() else {
-            return respond::error(400, "expected a channel configuration");
+        let ch = match req.json::<s2l_notify::Channel>() {
+            Ok(ch) => ch,
+            Err(e) => return bad_body("a channel configuration", &e),
         };
         let outcome = self.pipeline.test_channel(&ch).await;
         respond::ok(&serde_json::to_value(outcome).unwrap_or_default())
     }
 
     fn add_rule(&self, req: &ApiReq) -> Reply {
-        let Ok(mut r) = req.json::<NotifyRule>() else {
-            return respond::error(400, "expected a rule object");
+        let mut r = match req.json::<NotifyRule>() {
+            Ok(r) => r,
+            Err(e) => return bad_body("a rule object", &e),
         };
         self.mutate(move |s| {
             r.id = s.take_id();
@@ -546,8 +558,12 @@ impl Handler {
     }
 
     fn update_rule(&self, id: &str, req: &ApiReq) -> Reply {
-        let (Ok(id), Ok(r)) = (id.parse::<u32>(), req.json::<NotifyRule>()) else {
-            return respond::error(400, "expected a numeric id and a rule object");
+        let Ok(id) = id.parse::<u32>() else {
+            return respond::error(400, "the rule id must be a number");
+        };
+        let r = match req.json::<NotifyRule>() {
+            Ok(r) => r,
+            Err(e) => return bad_body("a rule object", &e),
         };
         self.mutate(move |s| match s.rules.iter_mut().find(|x| x.id == id) {
             Some(slot) => {
@@ -591,6 +607,10 @@ impl Handler {
 
 fn json_of<T: serde::Serialize>(v: &T) -> serde_json::Value {
     serde_json::to_value(v).unwrap_or(serde_json::Value::Null)
+}
+
+fn bad_body(what: &str, why: &str) -> Reply {
+    respond::error(400, &format!("expected {what}: {why}"))
 }
 
 async fn blocking<T, F>(f: F) -> Result<T, String>

@@ -99,7 +99,7 @@ pub enum Channel {
     Email {
         server: String,
 
-        #[serde(default)]
+        #[serde(default, deserialize_with = "number_or_null")]
         port: u16,
         #[serde(default)]
         encryption: EmailTls,
@@ -129,6 +129,10 @@ pub enum EmailTls {
     StartTls,
 
     Tls,
+}
+
+fn number_or_null<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u16, D::Error> {
+    Ok(Option::<u16>::deserialize(d)?.unwrap_or(0))
 }
 
 impl EmailTls {
@@ -984,6 +988,24 @@ mod tests {
                 assert_eq!(auth, NtfyAuth::None);
             }
             _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn an_empty_port_box_means_the_default_port_not_a_rejected_channel() {
+        for body in [
+            r#"{"type":"email","server":"smtp.qq.com","port":null,"to":["a@b.c"]}"#,
+            r#"{"type":"email","server":"smtp.qq.com","to":["a@b.c"]}"#,
+        ] {
+            let ch: Channel = serde_json::from_str(body).expect(body);
+            let Channel::Email {
+                port, encryption, ..
+            } = ch
+            else {
+                panic!("wrong variant");
+            };
+            assert_eq!(port, 0, "0 means 'work it out from the encryption mode'");
+            assert_eq!(encryption, EmailTls::None);
         }
     }
 }

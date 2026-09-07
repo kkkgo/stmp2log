@@ -49,6 +49,7 @@ impl Access {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChannelCfg {
+    #[serde(default)]
     pub id: u32,
     pub name: String,
     #[serde(default = "yes")]
@@ -569,6 +570,13 @@ mod tests {
         let s: State = serde_json::from_str("{}").unwrap();
         assert_eq!(s.next_id, 1);
         assert_eq!(s.access.mode, AccessMode::Off);
+
+        let c: ChannelCfg = serde_json::from_str(
+            r#"{"name":"值班邮箱","type":"email","server":"smtp.qq.com","to":["a@b.c"]}"#,
+        )
+        .expect("a channel body without an id is still a channel");
+        assert_eq!(c.id, 0, "the server assigns the real one");
+        assert!(c.enabled, "and it defaults to on");
 
         let r: NotifyRule = serde_json::from_str(
             r#"{"id":1,"name":"old","matcher":{"logic":"all","conditions":[]},"channels":[2]}"#,
