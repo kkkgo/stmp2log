@@ -38,6 +38,10 @@ pub fn debug(msg: &str) {
     }
 }
 
+pub fn debug_enabled() -> bool {
+    DEBUG.load(Ordering::Relaxed)
+}
+
 fn stamp() -> String {
     fmt_local(now_ms())
 }

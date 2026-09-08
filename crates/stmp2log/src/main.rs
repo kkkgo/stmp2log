@@ -28,7 +28,7 @@ Usage:
 
 Options:
   -c, --config <path>   configuration file (default: ./config.ini)
-  -d, --debug           verbose logging
+  -d, --debug           verbose logging, including every SMTP command and reply
   -v, --version         print the version and exit
   -h, --help            print this help and exit
 
@@ -250,6 +250,11 @@ async fn start_smtp(
     let mut smtp = s2l_smtp::Config::new(tx);
     smtp.hostname = cfg.stmp_hostname.clone();
     smtp.max_size = cfg.stmp_maxsize;
+
+    smtp.trace = log::debug_enabled();
+    if smtp.trace {
+        log::info("SMTP session tracing is on (-d): every command and reply is logged");
+    }
 
     if !cfg.stmp_user.is_empty() || !cfg.stmp_pass.is_empty() {
         smtp.auth = s2l_smtp::AuthPolicy::Require {

@@ -60,6 +60,8 @@ pub struct Config {
     pub max_conns: usize,
     pub tls: Option<Arc<rustls::ServerConfig>>,
     pub auth: AuthPolicy,
+
+    pub trace: bool,
     pub sink: mpsc::Sender<Delivered>,
 }
 
@@ -76,6 +78,7 @@ impl Config {
             max_conns: 64,
             tls: None,
             auth: AuthPolicy::AcceptAny,
+            trace: false,
             sink,
         }
     }
@@ -159,35 +162,64 @@ async fn handle(
 ) -> std::io::Result<()> {
     let _ = sock.set_nodelay(true);
 
+    let tr = session::Trace::new(cfg.trace, peer);
+
     if implicit_tls {
         let Some(tls) = cfg.tls.clone() else {
             return Ok(());
         };
+        tr.note("connected (implicit TLS)");
         let acceptor = tokio_rustls::TlsAcceptor::from(tls);
-        let mut stream = acceptor.accept(sock).await?;
+        let mut stream = match acceptor.accept(sock).await {
+            Ok(s) => s,
+            Err(e) => {
+                handshake_failed(peer, &e);
+                return Ok(());
+            }
+        };
         let mut st = State::default();
 
-        session::run(&mut stream, &mut st, cfg, peer, true, true).await?;
+        session::run(&mut stream, &mut st, cfg, peer, true, true, &tr).await?;
+        tr.note("session ended");
         return Ok(());
     }
 
+    tr.note("connected");
     let mut sock = sock;
     let mut st = State::default();
-    match session::run(&mut sock, &mut st, cfg, peer, false, true).await? {
-        End::Done => Ok(()),
+    match session::run(&mut sock, &mut st, cfg, peer, false, true, &tr).await? {
+        End::Done => {
+            tr.note("session ended");
+            Ok(())
+        }
         End::StartTls => {
             let Some(tls) = cfg.tls.clone() else {
                 return Ok(());
             };
             let acceptor = tokio_rustls::TlsAcceptor::from(tls);
-            let mut stream = acceptor.accept(sock).await?;
+            let mut stream = match acceptor.accept(sock).await {
+                Ok(s) => s,
+                Err(e) => {
+                    handshake_failed(peer, &e);
+                    return Ok(());
+                }
+            };
+            tr.note("TLS handshake done");
 
             let mut fresh = State::default();
 
-            session::run(&mut stream, &mut fresh, cfg, peer, true, false).await?;
+            session::run(&mut stream, &mut fresh, cfg, peer, true, false, &tr).await?;
+            tr.note("session ended");
             Ok(())
         }
     }
+}
+
+fn handshake_failed(peer: SocketAddr, e: &std::io::Error) {
+    warn(&format!(
+        "TLS handshake with {peer} failed: {e} \
+         (old devices often speak only TLS 1.0/1.1, which is no longer accepted)"
+    ));
 }
 
 pub fn load_tls(data: &Path, names: &[String]) -> Result<Arc<rustls::ServerConfig>, SmtpError> {

@@ -16,6 +16,72 @@ pub enum End {
     StartTls,
 }
 
+pub struct Trace {
+    on: bool,
+    peer: SocketAddr,
+    start: std::time::Instant,
+}
+
+impl Trace {
+    pub fn new(on: bool, peer: SocketAddr) -> Self {
+        Self {
+            on,
+            peer,
+            start: std::time::Instant::now(),
+        }
+    }
+
+    fn cmd(&self, line: &[u8]) {
+        if self.on {
+            self.emit('<', &redact(line));
+        }
+    }
+
+    fn reply(&self, line: &str) {
+        if self.on {
+            self.emit('>', line);
+        }
+    }
+
+    fn secret(&self, n: usize) {
+        if self.on {
+            self.emit('<', &format!("<credentials, {n} bytes>"));
+        }
+    }
+
+    pub fn note(&self, msg: &str) {
+        if self.on {
+            self.emit('-', msg);
+        }
+    }
+
+    fn alert(&self, msg: &str) {
+        crate::warn(&format!("{} {msg}", self.peer));
+    }
+
+    fn emit(&self, dir: char, text: &str) {
+        crate::info(&format!(
+            "{} +{:.3}s {dir} {text}",
+            self.peer,
+            self.start.elapsed().as_secs_f64()
+        ));
+    }
+}
+
+fn redact(line: &[u8]) -> String {
+    let (verb, rest) = split_verb(line);
+    if verb != "AUTH" {
+        return String::from_utf8_lossy(line).into_owned();
+    }
+    let text = String::from_utf8_lossy(rest);
+    let mut parts = text.split_whitespace();
+    let mech = parts.next().unwrap_or("");
+    match parts.next() {
+        Some(_) => format!("AUTH {mech} <initial response, {} bytes>", text.len()),
+        None => format!("AUTH {mech}"),
+    }
+}
+
 #[derive(Default)]
 pub struct State {
     greeted: bool,
@@ -33,6 +99,7 @@ pub async fn run<S>(
     peer: SocketAddr,
     tls_active: bool,
     greet: bool,
+    tr: &Trace,
 ) -> std::io::Result<End>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -42,6 +109,7 @@ where
     if greet {
         write_line(
             &mut rd,
+            tr,
             &format!("220 {} ESMTP stmp2log ready", cfg.hostname),
         )
         .await?;
@@ -50,10 +118,10 @@ where
     let mut line = Vec::with_capacity(256);
     loop {
         line.clear();
-        let n = match tokio::time::timeout(cfg.timeout, read_line(&mut rd, &mut line)).await {
+        let n = match tokio::time::timeout(cfg.timeout, read_line(&mut rd, tr, &mut line)).await {
             Ok(r) => r?,
             Err(_) => {
-                let _ = write_line(&mut rd, "421 4.4.2 idle timeout, closing").await;
+                let _ = write_line(&mut rd, tr, "421 4.4.2 idle timeout, closing").await;
                 return Ok(End::Done);
             }
         };
@@ -71,61 +139,64 @@ where
                 st.greeted = true;
                 st.peer_name = String::from_utf8_lossy(rest).trim().to_string();
                 for l in ehlo_lines(cfg, tls_active) {
-                    write_line(&mut rd, &l).await?;
+                    write_line(&mut rd, tr, &l).await?;
                 }
             }
             "HELO" => {
                 st.reset_envelope();
                 st.greeted = true;
                 st.peer_name = String::from_utf8_lossy(rest).trim().to_string();
-                write_line(&mut rd, &format!("250 {}", cfg.hostname)).await?;
+                write_line(&mut rd, tr, &format!("250 {}", cfg.hostname)).await?;
             }
             "STARTTLS" => {
                 if tls_active {
-                    write_line(&mut rd, "503 5.5.1 TLS is already active").await?;
+                    write_line(&mut rd, tr, "503 5.5.1 TLS is already active").await?;
                 } else if cfg.tls.is_none() {
-                    write_line(&mut rd, "454 4.7.0 TLS is not available").await?;
+                    write_line(&mut rd, tr, "454 4.7.0 TLS is not available").await?;
                 } else {
-                    write_line(&mut rd, "220 2.0.0 ready to start TLS").await?;
+                    write_line(&mut rd, tr, "220 2.0.0 ready to start TLS").await?;
                     return Ok(End::StartTls);
                 }
             }
             "AUTH" => {
-                handle_auth(&mut rd, st, cfg, rest).await?;
+                if !handle_auth(&mut rd, st, cfg, rest, tr).await? {
+                    return Ok(End::Done);
+                }
             }
 
             _ if matches!(verb.as_str(), "MAIL" | "RCPT" | "DATA")
                 && requires_auth(cfg)
                 && st.auth_user.is_none() =>
             {
-                write_line(&mut rd, "530 5.7.0 authentication required").await?;
+                write_line(&mut rd, tr, "530 5.7.0 authentication required").await?;
             }
             "MAIL" => {
                 if let Some(addr) = param_after(rest, b"FROM:") {
                     st.mail_from = Some(addr);
                     st.rcpt.clear();
-                    write_line(&mut rd, "250 2.1.0 sender ok").await?;
+                    write_line(&mut rd, tr, "250 2.1.0 sender ok").await?;
                 } else {
-                    write_line(&mut rd, "501 5.5.4 syntax: MAIL FROM:<address>").await?;
+                    write_line(&mut rd, tr, "501 5.5.4 syntax: MAIL FROM:<address>").await?;
                 }
             }
             "RCPT" => match param_after(rest, b"TO:") {
                 Some(addr) if st.rcpt.len() >= MAX_RCPT => {
                     let _ = addr;
-                    write_line(&mut rd, "452 4.5.3 too many recipients").await?;
+                    write_line(&mut rd, tr, "452 4.5.3 too many recipients").await?;
                 }
                 Some(addr) => {
                     st.rcpt.push(addr);
-                    write_line(&mut rd, "250 2.1.5 recipient ok").await?;
+                    write_line(&mut rd, tr, "250 2.1.5 recipient ok").await?;
                 }
                 None => {
-                    write_line(&mut rd, "501 5.5.4 syntax: RCPT TO:<address>").await?;
+                    write_line(&mut rd, tr, "501 5.5.4 syntax: RCPT TO:<address>").await?;
                 }
             },
             "DATA" => {
-                write_line(&mut rd, "354 end data with <CR><LF>.<CR><LF>").await?;
+                write_line(&mut rd, tr, "354 end data with <CR><LF>.<CR><LF>").await?;
                 match read_data(&mut rd, cfg).await? {
                     Ok(data) => {
+                        tr.note(&format!("<message body, {} bytes>", data.len()));
                         let msg = Delivered {
                             envelope_from: st
                                 .mail_from
@@ -151,11 +222,12 @@ where
                                 "421 4.3.2 service shutting down".to_string()
                             }
                         };
-                        write_line(&mut rd, &reply).await?;
+                        write_line(&mut rd, tr, &reply).await?;
                     }
                     Err(TooBig) => {
                         write_line(
                             &mut rd,
+                            tr,
                             &format!("552 5.3.4 message exceeds the {} byte limit", cfg.max_size),
                         )
                         .await?;
@@ -165,26 +237,27 @@ where
             }
             "RSET" => {
                 st.reset_envelope();
-                write_line(&mut rd, "250 2.0.0 reset").await?;
+                write_line(&mut rd, tr, "250 2.0.0 reset").await?;
             }
-            "NOOP" => write_line(&mut rd, "250 2.0.0 ok").await?,
+            "NOOP" => write_line(&mut rd, tr, "250 2.0.0 ok").await?,
             "VRFY" | "EXPN" => {
-                write_line(&mut rd, "252 2.5.2 cannot verify, will accept anyway").await?;
+                write_line(&mut rd, tr, "252 2.5.2 cannot verify, will accept anyway").await?;
             }
             "HELP" => {
                 write_line(
                     &mut rd,
+                    tr,
                     "214 2.0.0 EHLO HELO MAIL RCPT DATA RSET NOOP AUTH STARTTLS QUIT",
                 )
                 .await?;
             }
             "QUIT" => {
-                write_line(&mut rd, &format!("221 2.0.0 {} closing", cfg.hostname)).await?;
+                write_line(&mut rd, tr, &format!("221 2.0.0 {} closing", cfg.hostname)).await?;
                 return Ok(End::Done);
             }
             "" => {}
             other => {
-                write_line(&mut rd, &format!("500 5.5.2 unknown command {other}")).await?;
+                write_line(&mut rd, tr, &format!("500 5.5.2 unknown command {other}")).await?;
             }
         }
     }
@@ -255,26 +328,67 @@ fn credentials_ok(policy: &AuthPolicy, creds: &Creds) -> bool {
     }
     true
 }
+
+fn cram_challenge(cfg: &Config) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let mut r = [0u8; 8];
+    let _ = getrandom::getrandom(&mut r);
+    format!(
+        "<{:016x}.{now}@{}>",
+        u64::from_le_bytes(r),
+        cfg.hostname.trim()
+    )
+}
+
+async fn auth_aborted<S>(rd: &mut BufReader<&mut S>, tr: &Trace) -> std::io::Result<bool>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    write_line(rd, tr, "501 5.7.0 authentication aborted").await?;
+    Ok(true)
+}
+
 async fn handle_auth<S>(
     rd: &mut BufReader<&mut S>,
     st: &mut State,
     cfg: &Config,
     rest: &[u8],
-) -> std::io::Result<()>
+    tr: &Trace,
+) -> std::io::Result<bool>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let text = String::from_utf8_lossy(rest);
     let mut parts = text.split_whitespace();
     let mech = parts.next().unwrap_or("").to_ascii_uppercase();
-    let initial = parts.next().unwrap_or("");
+
+    let initial = match parts.next() {
+        None => None,
+        Some("=") => Some(Vec::new()),
+        Some(s) => Some(b64(s)),
+    };
+
+    macro_rules! answer {
+        () => {
+            match read_auth_line(rd, cfg, tr).await? {
+                AuthLine::Data(v) => v,
+                AuthLine::Cancelled => return auth_aborted(rd, tr).await,
+                AuthLine::Gone => return Ok(false),
+            }
+        };
+    }
+
     let creds = match mech.as_str() {
         "PLAIN" => {
-            let payload = if initial.is_empty() {
-                write_line(rd, "334 ").await?;
-                read_b64_line(rd).await?
-            } else {
-                b64(initial)
+            let payload = match initial {
+                Some(p) => p,
+                None => {
+                    write_line(rd, tr, "334 ").await?;
+                    answer!()
+                }
             };
 
             let mut fields = payload.split(|&b| b == 0);
@@ -289,19 +403,24 @@ where
             Creds { user, pass }
         }
         "LOGIN" => {
-            write_line(rd, "334 VXNlcm5hbWU6").await?;
-            let u = read_b64_line(rd).await?;
+            let user = match initial {
+                Some(u) => u,
+                None => {
+                    write_line(rd, tr, "334 VXNlcm5hbWU6").await?;
+                    answer!()
+                }
+            };
 
-            write_line(rd, "334 UGFzc3dvcmQ6").await?;
-            let p = read_b64_line(rd).await?;
+            write_line(rd, tr, "334 UGFzc3dvcmQ6").await?;
+            let p = answer!();
             Creds {
-                user: String::from_utf8_lossy(&u).to_string(),
+                user: String::from_utf8_lossy(&user).to_string(),
                 pass: Some(String::from_utf8_lossy(&p).to_string()),
             }
         }
         "CRAM-MD5" => {
-            write_line(rd, "334 PHN0bXAybG9nLmNoYWxsZW5nZT4=").await?;
-            let resp = read_b64_line(rd).await?;
+            write_line(rd, tr, &format!("334 {}", b64_encode(cram_challenge(cfg)))).await?;
+            let resp = answer!();
             Creds {
                 user: String::from_utf8_lossy(&resp)
                     .split_whitespace()
@@ -312,20 +431,30 @@ where
             }
         }
         "" => {
-            write_line(rd, "501 5.5.4 syntax: AUTH <mechanism>").await?;
-            return Ok(());
+            write_line(rd, tr, "501 5.5.4 syntax: AUTH <mechanism>").await?;
+            return Ok(true);
         }
         other => {
-            write_line(rd, &format!("504 5.5.4 unsupported mechanism {other}")).await?;
-            return Ok(());
+            tr.alert(&format!(
+                "asked for AUTH {other}, which this server does not implement; \
+                 it offers LOGIN, PLAIN and CRAM-MD5"
+            ));
+            write_line(rd, tr, &format!("504 5.5.4 unsupported mechanism {other}")).await?;
+            return Ok(true);
         }
     };
+
     if credentials_ok(&cfg.auth, &creds) {
         st.auth_user = Some(creds.user);
-        write_line(rd, "235 2.7.0 authentication successful").await
+        write_line(rd, tr, "235 2.7.0 authentication successful").await?;
     } else {
-        write_line(rd, "535 5.7.8 authentication failed").await
+        tr.alert(&format!(
+            "AUTH {mech} failed for account {:?}; check stmp_user / stmp_pass",
+            creds.user
+        ));
+        write_line(rd, tr, "535 5.7.8 authentication failed").await?;
     }
+    Ok(true)
 }
 struct TooBig;
 
@@ -371,7 +500,11 @@ where
     Ok(if too_big { Err(TooBig) } else { Ok(out) })
 }
 
-async fn read_line<S>(rd: &mut BufReader<&mut S>, buf: &mut Vec<u8>) -> std::io::Result<usize>
+async fn read_line<S>(
+    rd: &mut BufReader<&mut S>,
+    tr: &Trace,
+    buf: &mut Vec<u8>,
+) -> std::io::Result<usize>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -379,16 +512,50 @@ where
     if buf.len() > MAX_LINE {
         buf.truncate(MAX_LINE);
     }
+    if n > 0 {
+        tr.cmd(trim_eol(buf));
+    }
     Ok(n)
 }
 
-async fn read_b64_line<S>(rd: &mut BufReader<&mut S>) -> std::io::Result<Vec<u8>>
+enum AuthLine {
+    Data(Vec<u8>),
+
+    Cancelled,
+
+    Gone,
+}
+
+async fn read_auth_line<S>(
+    rd: &mut BufReader<&mut S>,
+    cfg: &Config,
+    tr: &Trace,
+) -> std::io::Result<AuthLine>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut line = Vec::new();
-    rd.read_until(b'\n', &mut line).await?;
-    Ok(b64(&String::from_utf8_lossy(trim_eol(&line))))
+    let n = match tokio::time::timeout(cfg.timeout, rd.read_until(b'\n', &mut line)).await {
+        Ok(r) => r?,
+        Err(_) => {
+            tr.note("timed out waiting for the AUTH response");
+            return Ok(AuthLine::Gone);
+        }
+    };
+    if n == 0 {
+        tr.note("peer hung up during AUTH");
+        return Ok(AuthLine::Gone);
+    }
+    if line.len() > MAX_LINE {
+        line.truncate(MAX_LINE);
+    }
+    let body = trim_eol(&line);
+    if body == b"*" {
+        tr.cmd(b"*");
+        return Ok(AuthLine::Cancelled);
+    }
+    tr.secret(body.len());
+    Ok(AuthLine::Data(b64(&String::from_utf8_lossy(body))))
 }
 
 fn b64(s: &str) -> Vec<u8> {
@@ -398,10 +565,16 @@ fn b64(s: &str) -> Vec<u8> {
         .unwrap_or_else(|_| s.trim().as_bytes().to_vec())
 }
 
-async fn write_line<S>(rd: &mut BufReader<&mut S>, line: &str) -> std::io::Result<()>
+fn b64_encode(s: impl AsRef<[u8]>) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(s)
+}
+
+async fn write_line<S>(rd: &mut BufReader<&mut S>, tr: &Trace, line: &str) -> std::io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    tr.reply(line);
     let io = rd.get_mut();
     io.write_all(line.as_bytes()).await?;
     io.write_all(b"\r\n").await?;
@@ -542,6 +715,31 @@ mod tests {
         assert_eq!(b64("dXNlcg=="), b"user");
         assert_eq!(b64("not base64 at all"), b"not base64 at all");
     }
+
+    #[test]
+    fn the_auth_payload_never_reaches_the_trace() {
+        let line = redact(b"AUTH PLAIN AGRldmljZTAxAHNlY3JldA==");
+        assert!(
+            !line.contains("AGRldmljZTAx"),
+            "the credential blob leaked into the log: {line}"
+        );
+        assert!(line.starts_with("AUTH PLAIN"), "{line}");
+        assert_eq!(redact(b"AUTH LOGIN"), "AUTH LOGIN");
+        assert_eq!(redact(b"MAIL FROM:<a@b.c>"), "MAIL FROM:<a@b.c>");
+    }
+
+    #[test]
+    fn the_cram_challenge_is_a_message_id() {
+        let cfg = Config::for_test();
+        let c = cram_challenge(&cfg);
+        assert!(c.starts_with('<') && c.ends_with('>'), "{c}");
+        assert!(c.contains(&format!("@{}>", cfg.hostname)), "{c}");
+        assert_ne!(
+            cram_challenge(&cfg),
+            cram_challenge(&cfg),
+            "a fixed challenge makes the digest a constant, which defeats the mechanism"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -574,7 +772,16 @@ mod protocol {
         let (mut client, mut server) = tokio::io::duplex(256 * 1024);
         let task = tokio::spawn(async move {
             let mut st = State::default();
-            run(&mut server, &mut st, &cfg, peer(), false, true).await
+            run(
+                &mut server,
+                &mut st,
+                &cfg,
+                peer(),
+                false,
+                true,
+                &Trace::new(false, peer()),
+            )
+            .await
         });
 
         client.write_all(script).await.unwrap();
@@ -610,7 +817,16 @@ mod protocol {
         let (mut client, mut server) = tokio::io::duplex(256 * 1024);
         let task = tokio::spawn(async move {
             let mut st = State::default();
-            run(&mut server, &mut st, &cfg, peer(), true, false).await
+            run(
+                &mut server,
+                &mut st,
+                &cfg,
+                peer(),
+                true,
+                false,
+                &Trace::new(false, peer()),
+            )
+            .await
         });
         client.write_all(script).await.unwrap();
         client.shutdown().await.unwrap();
@@ -736,6 +952,72 @@ mod protocol {
             h.got[0].auth_user.as_deref(),
             Some("whatever"),
             "the username is worth recording even though it is not checked"
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_login_takes_the_username_on_the_command_line() {
+        let h = run_script(
+            b"EHLO idrac\r\n\
+              AUTH LOGIN dXBzLTAx\r\n\
+              cGFzc3dvcmQ=\r\n\
+              MAIL FROM:<a@b.c>\r\nRCPT TO:<x@y>\r\nDATA\r\nhi\r\n.\r\nQUIT\r\n",
+        )
+        .await;
+        assert_eq!(
+            h.codes(),
+            [
+                "220", "250", "334", "235", "250", "250", "354", "250", "221"
+            ],
+            "exactly one challenge (the password) and then 235: {:?}",
+            h.replies
+        );
+        assert_eq!(h.got.len(), 1, "replies were: {:?}", h.replies);
+        assert_eq!(
+            h.got[0].auth_user.as_deref(),
+            Some("ups-01"),
+            "the name from the command line is the account, not the next line"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_auth_exchange_is_refused_without_desyncing() {
+        let h = run_script(b"EHLO d\r\nAUTH LOGIN\r\n*\r\nNOOP\r\nQUIT\r\n").await;
+        assert!(
+            h.replies.contains("501 5.7.0 authentication aborted"),
+            "{:?}",
+            h.replies
+        );
+        assert_eq!(
+            h.codes(),
+            ["220", "250", "334", "501", "250", "221"],
+            "one reply per command, none extra: {:?}",
+            h.replies
+        );
+    }
+
+    #[tokio::test]
+    async fn a_device_that_vanishes_mid_auth_is_not_told_it_succeeded() {
+        let h = run_script(b"EHLO d\r\nAUTH LOGIN\r\n").await;
+        assert!(
+            !h.replies.contains("235 "),
+            "nobody is there to authenticate: {:?}",
+            h.replies
+        );
+    }
+
+    #[tokio::test]
+    async fn the_cram_challenge_on_the_wire_is_a_message_id() {
+        let h = run_script(b"EHLO d\r\nAUTH CRAM-MD5\r\nZGV2aWNlMDEgYWJjZGVm\r\nQUIT\r\n").await;
+        let line = h
+            .replies
+            .lines()
+            .find(|l| l.starts_with("334 "))
+            .unwrap_or_default();
+        let challenge = String::from_utf8_lossy(&b64(&line[4..])).into_owned();
+        assert!(
+            challenge.starts_with('<') && challenge.contains('@') && challenge.ends_with('>'),
+            "not a message-id: {challenge:?}"
         );
     }
 
