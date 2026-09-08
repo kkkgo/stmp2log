@@ -193,17 +193,9 @@ async fn handle(
     let tr = session::Trace::new(cfg.trace, peer);
 
     if implicit_tls {
-        let Some(tls) = cfg.tls.clone() else {
-            return Ok(());
-        };
         tr.note("connected (implicit TLS)");
-        let acceptor = tokio_rustls::TlsAcceptor::from(tls);
-        let mut stream = match acceptor.accept(sock).await {
-            Ok(s) => s,
-            Err(e) => {
-                handshake_failed(cfg, peer, true, &e);
-                return Ok(());
-            }
+        let Some(mut stream) = accept_tls(sock, peer, cfg, true, &tr).await else {
+            return Ok(());
         };
         let mut st = State::default();
 
@@ -218,19 +210,12 @@ async fn handle(
     match session::run(&mut sock, &mut st, cfg, peer, false, true, &tr).await? {
         End::Done => {
             tr.note("session ended");
+            gave_up_without_tls(cfg, peer, &st);
             Ok(())
         }
         End::StartTls => {
-            let Some(tls) = cfg.tls.clone() else {
+            let Some(mut stream) = accept_tls(sock, peer, cfg, false, &tr).await else {
                 return Ok(());
-            };
-            let acceptor = tokio_rustls::TlsAcceptor::from(tls);
-            let mut stream = match acceptor.accept(sock).await {
-                Ok(s) => s,
-                Err(e) => {
-                    handshake_failed(cfg, peer, false, &e);
-                    return Ok(());
-                }
             };
             tr.note("TLS handshake done");
 
@@ -243,7 +228,106 @@ async fn handle(
     }
 }
 
-fn handshake_failed(cfg: &Config, peer: SocketAddr, implicit_tls: bool, e: &std::io::Error) {
+async fn accept_tls(
+    sock: TcpStream,
+    peer: SocketAddr,
+    cfg: &Config,
+    implicit_tls: bool,
+    tr: &session::Trace,
+) -> Option<tokio_rustls::server::TlsStream<TcpStream>> {
+    let tls = cfg.tls.clone()?;
+    let acceptor = tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), sock);
+    let start = match acceptor.await {
+        Ok(s) => s,
+        Err(e) => {
+            handshake_failed(cfg, peer, implicit_tls, &e, None);
+            return None;
+        }
+    };
+    let hello = describe_client_hello(&start.client_hello());
+    tr.note(&format!("client hello: {hello}"));
+    match start.into_stream(tls).await {
+        Ok(s) => Some(s),
+        Err(e) => {
+            handshake_failed(cfg, peer, implicit_tls, &e, Some(&hello));
+            None
+        }
+    }
+}
+
+fn describe_client_hello(ch: &rustls::server::ClientHello<'_>) -> String {
+    let groups = match ch.named_groups() {
+        Some(g) if !g.is_empty() => g
+            .iter()
+            .map(|g| format!("{g:?}"))
+            .collect::<Vec<_>>()
+            .join(" "),
+
+        Some(_) => "<empty>".to_string(),
+        None => "<absent>".to_string(),
+    };
+    let suites = ch
+        .cipher_suites()
+        .iter()
+        .map(|s| format!("{s:?}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let rsa_kx = ch.cipher_suites().iter().any(|s| is_static_rsa(*s));
+    format!(
+        "sni={} groups=[{groups}] rsa-kx={} suites=[{suites}]",
+        ch.server_name().unwrap_or("<none>"),
+        if rsa_kx { "yes" } else { "no" }
+    )
+}
+
+fn is_static_rsa(suite: rustls::CipherSuite) -> bool {
+    matches!(
+        u16::from(suite),
+        0x0001..=0x000a | 0x002f | 0x0035 | 0x003b..=0x003d | 0x0041 | 0x0084 | 0x009c | 0x009d
+    )
+}
+
+fn gave_up_without_tls(cfg: &Config, peer: SocketAddr, st: &State) {
+    if !st.greeted_but_delivered_nothing() || !cfg.tls_trouble.contains(peer.ip()) {
+        return;
+    }
+    warn(&format!(
+        "{peer} said hello and left without delivering anything, and its TLS handshake \
+         had failed earlier: this device will not send credentials over an unencrypted \
+         link. Turn authentication off on the device (stmp2log does not check credentials \
+         anyway), or terminate TLS in front of stmp2log."
+    ));
+}
+
+fn tls_rejection(e: &std::io::Error) -> Option<&rustls::Error> {
+    e.get_ref()?.downcast_ref::<rustls::Error>()
+}
+
+fn handshake_failed(
+    cfg: &Config,
+    peer: SocketAddr,
+    implicit_tls: bool,
+    e: &std::io::Error,
+    hello: Option<&str>,
+) {
+    let Some(rejection) = tls_rejection(e) else {
+        warn(&format!("TLS handshake with {peer} failed: {e}"));
+        return;
+    };
+    let why = match rejection {
+        rustls::Error::PeerIncompatible(rustls::PeerIncompatible::NoKxGroupsInCommon) => {
+            "This device's ClientHello names no key-exchange group stmp2log supports \
+             (old stacks often send no supported_groups extension at all), so its TLS \
+             can never be negotiated here."
+        }
+        rustls::Error::PeerIncompatible(_) => {
+            "This device's TLS is older than the TLS 1.2 + ECDHE that stmp2log accepts."
+        }
+        rustls::Error::AlertReceived(_) => {
+            "The device refused the TLS session (most likely the self-signed certificate)."
+        }
+        _ => "The TLS session could not be established.",
+    };
     let first = cfg.tls_trouble.remember(peer.ip());
 
     if !first {
@@ -259,9 +343,13 @@ fn handshake_failed(cfg: &Config, peer: SocketAddr, implicit_tls: bool, e: &std:
             peer.ip()
         )
     };
+
+    let offered = match hello {
+        Some(h) => format!(" The device offered: {h}"),
+        None => String::new(),
+    };
     warn(&format!(
-        "TLS handshake with {peer} failed: {e}. This device's TLS is older than the \
-         TLS 1.2 + ECDHE that stmp2log accepts. {advice}"
+        "TLS handshake with {peer} failed: {e}. {why} {advice}{offered}"
     ));
 }
 
@@ -322,5 +410,40 @@ mod tests {
             t.remember(format!("10.1.{}.{}", i / 256, i % 256).parse().unwrap());
         }
         assert!(t.0.lock().unwrap().len() <= MAX_TLS_TROUBLE);
+    }
+
+    #[test]
+    fn static_rsa_suites_are_recognised_by_number() {
+        use rustls::CipherSuite;
+
+        for n in [0x002fu16, 0x0035, 0x009c, 0x000a] {
+            assert!(is_static_rsa(CipherSuite::from(n)), "{n:#06x}");
+        }
+        for named in [
+            CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+            CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+            CipherSuite::TLS13_AES_128_GCM_SHA256,
+        ] {
+            assert!(
+                !is_static_rsa(named),
+                "{named:?} is ephemeral; calling it static RSA would send people \
+                 down the wrong path"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_tls_level_rejection_counts_as_the_device_being_incompatible() {
+        let blip = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
+        assert!(tls_rejection(&blip).is_none());
+
+        let refused = std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            rustls::Error::PeerIncompatible(rustls::PeerIncompatible::NoKxGroupsInCommon),
+        );
+        assert!(
+            tls_rejection(&refused).is_some(),
+            "a device that cannot negotiate must be remembered"
+        );
     }
 }

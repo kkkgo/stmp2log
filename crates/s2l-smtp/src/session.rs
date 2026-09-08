@@ -90,6 +90,14 @@ pub struct State {
     mail_from: Option<String>,
     rcpt: Vec<String>,
     auth_user: Option<String>,
+
+    delivered: usize,
+}
+
+impl State {
+    pub fn greeted_but_delivered_nothing(&self) -> bool {
+        self.greeted && self.delivered == 0
+    }
 }
 
 pub async fn run<S>(
@@ -214,7 +222,10 @@ where
                             auth_user: st.auth_user.clone(),
                         };
                         let reply = match cfg.sink.try_send(msg) {
-                            Ok(()) => "250 2.0.0 message accepted".to_string(),
+                            Ok(()) => {
+                                st.delivered += 1;
+                                "250 2.0.0 message accepted".to_string()
+                            }
                             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                                 "451 4.3.1 mail queue is full, try again later".to_string()
                             }
@@ -1359,6 +1370,39 @@ mod protocol {
         let h = run_script(b"MAIL FROM:<a@x>\r\nRCPT TO:<l@y>\r\nDATA\r\npartial line\r\n").await;
         assert_eq!(h.got.len(), 1);
         assert!(String::from_utf8_lossy(&h.got[0].data).contains("partial line"));
+    }
+
+    async fn state_after(script: &'static [u8]) -> State {
+        let (c, _rx) = cfg();
+        let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+        let task = tokio::spawn(async move {
+            let mut st = State::default();
+            let tr = Trace::new(false, peer());
+            let _ = run(&mut server, &mut st, &c, peer(), false, true, &tr).await;
+            st
+        });
+        client.write_all(script).await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut out = Vec::new();
+        client.read_to_end(&mut out).await.unwrap();
+        task.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_caller_can_tell_that_a_device_left_empty_handed() {
+        assert!(
+            state_after(b"EHLO idrac\r\nQUIT\r\n")
+                .await
+                .greeted_but_delivered_nothing()
+        );
+        assert!(
+            !state_after(
+                b"EHLO d\r\nMAIL FROM:<a@b.c>\r\nRCPT TO:<x@y>\r\nDATA\r\nhi\r\n.\r\nQUIT\r\n"
+            )
+            .await
+            .greeted_but_delivered_nothing(),
+            "a session that delivered a message must not look like one that gave up"
+        );
     }
 
     #[tokio::test]
