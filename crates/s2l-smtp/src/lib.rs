@@ -1,7 +1,8 @@
 // Copyright (c) 2026, https://blog.03k.org. All rights reserved.
-use std::net::SocketAddr;
+use std::collections::HashSet;
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::net::{TcpListener, TcpStream};
@@ -47,6 +48,27 @@ pub enum AuthPolicy {
     Require { user: String, pass: String },
 }
 
+const MAX_TLS_TROUBLE: usize = 256;
+
+#[derive(Clone, Default)]
+pub struct TlsTrouble(Arc<Mutex<HashSet<IpAddr>>>);
+
+impl TlsTrouble {
+    pub(crate) fn remember(&self, ip: IpAddr) -> bool {
+        let Ok(mut set) = self.0.lock() else {
+            return false;
+        };
+        if set.len() >= MAX_TLS_TROUBLE {
+            set.clear();
+        }
+        set.insert(ip)
+    }
+
+    pub(crate) fn contains(&self, ip: IpAddr) -> bool {
+        self.0.lock().map(|s| s.contains(&ip)).unwrap_or(false)
+    }
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub bind: Vec<SocketAddr>,
@@ -59,7 +81,11 @@ pub struct Config {
 
     pub max_conns: usize,
     pub tls: Option<Arc<rustls::ServerConfig>>,
+
+    pub starttls: bool,
     pub auth: AuthPolicy,
+
+    pub tls_trouble: TlsTrouble,
 
     pub trace: bool,
     pub sink: mpsc::Sender<Delivered>,
@@ -77,7 +103,9 @@ impl Config {
             timeout: Duration::from_secs(300),
             max_conns: 64,
             tls: None,
+            starttls: true,
             auth: AuthPolicy::AcceptAny,
+            tls_trouble: TlsTrouble::default(),
             trace: false,
             sink,
         }
@@ -173,7 +201,7 @@ async fn handle(
         let mut stream = match acceptor.accept(sock).await {
             Ok(s) => s,
             Err(e) => {
-                handshake_failed(peer, &e);
+                handshake_failed(cfg, peer, true, &e);
                 return Ok(());
             }
         };
@@ -200,7 +228,7 @@ async fn handle(
             let mut stream = match acceptor.accept(sock).await {
                 Ok(s) => s,
                 Err(e) => {
-                    handshake_failed(peer, &e);
+                    handshake_failed(cfg, peer, false, &e);
                     return Ok(());
                 }
             };
@@ -215,10 +243,25 @@ async fn handle(
     }
 }
 
-fn handshake_failed(peer: SocketAddr, e: &std::io::Error) {
+fn handshake_failed(cfg: &Config, peer: SocketAddr, implicit_tls: bool, e: &std::io::Error) {
+    let first = cfg.tls_trouble.remember(peer.ip());
+
+    if !first {
+        warn(&format!("TLS handshake with {peer} failed again: {e}"));
+        return;
+    }
+    let advice = if implicit_tls {
+        "Point the device at the plaintext port (stmp_listen) instead.".to_string()
+    } else {
+        format!(
+            "STARTTLS will no longer be offered to {}, so it can deliver in the clear \
+             (stmp_starttls=0 hides STARTTLS from every device).",
+            peer.ip()
+        )
+    };
     warn(&format!(
-        "TLS handshake with {peer} failed: {e} \
-         (old devices often speak only TLS 1.0/1.1, which is no longer accepted)"
+        "TLS handshake with {peer} failed: {e}. This device's TLS is older than the \
+         TLS 1.2 + ECDHE that stmp2log accepts. {advice}"
     ));
 }
 
@@ -251,4 +294,33 @@ pub(crate) fn info(msg: &str) {
 
 pub(crate) fn warn(msg: &str) {
     eprintln!("[smtp] WARN {msg}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_broken_device_is_remembered_once_and_the_set_stays_bounded() {
+        let t = TlsTrouble::default();
+        let dev: IpAddr = "10.0.0.9".parse().unwrap();
+        assert!(
+            t.remember(dev),
+            "the first failure is the one that gets the long explanation"
+        );
+        assert!(
+            !t.remember(dev),
+            "every retry after that must not repeat it"
+        );
+        assert!(t.contains(dev));
+        assert!(
+            !t.contains("10.0.0.10".parse().unwrap()),
+            "one broken device must not take TLS away from the rest"
+        );
+
+        for i in 0..MAX_TLS_TROUBLE + 5 {
+            t.remember(format!("10.1.{}.{}", i / 256, i % 256).parse().unwrap());
+        }
+        assert!(t.0.lock().unwrap().len() <= MAX_TLS_TROUBLE);
+    }
 }

@@ -271,6 +271,10 @@ async fn start_smtp(
     }
     smtp.bind = cfg.stmp_listen.into_iter().collect();
     smtp.tls_bind = cfg.stmp_tls_listen.into_iter().collect();
+    smtp.starttls = cfg.stmp_starttls;
+    if !smtp.starttls {
+        log::info("STARTTLS is not advertised on the plaintext port (stmp_starttls=0)");
+    }
 
     match s2l_smtp::load_tls(&cfg.data, std::slice::from_ref(&cfg.stmp_hostname)) {
         Ok(tls) => smtp.tls = Some(tls),

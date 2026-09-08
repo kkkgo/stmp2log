@@ -138,7 +138,7 @@ where
                 st.reset_envelope();
                 st.greeted = true;
                 st.peer_name = String::from_utf8_lossy(rest).trim().to_string();
-                for l in ehlo_lines(cfg, tls_active) {
+                for l in ehlo_lines(cfg, offer_starttls(cfg, peer, tls_active)) {
                     write_line(&mut rd, tr, &l).await?;
                 }
             }
@@ -151,7 +151,7 @@ where
             "STARTTLS" => {
                 if tls_active {
                     write_line(&mut rd, tr, "503 5.5.1 TLS is already active").await?;
-                } else if cfg.tls.is_none() {
+                } else if !offer_starttls(cfg, peer, tls_active) {
                     write_line(&mut rd, tr, "454 4.7.0 TLS is not available").await?;
                 } else {
                     write_line(&mut rd, tr, "220 2.0.0 ready to start TLS").await?;
@@ -278,7 +278,12 @@ fn auth_line(cfg: &Config) -> String {
         "AUTH LOGIN PLAIN CRAM-MD5".to_string()
     }
 }
-fn ehlo_lines(cfg: &Config, tls_active: bool) -> Vec<String> {
+
+fn offer_starttls(cfg: &Config, peer: SocketAddr, tls_active: bool) -> bool {
+    cfg.starttls && cfg.tls.is_some() && !tls_active && !cfg.tls_trouble.contains(peer.ip())
+}
+
+fn ehlo_lines(cfg: &Config, starttls: bool) -> Vec<String> {
     let mut caps = vec![
         format!("SIZE {}", cfg.max_size),
         "8BITMIME".to_string(),
@@ -287,7 +292,7 @@ fn ehlo_lines(cfg: &Config, tls_active: bool) -> Vec<String> {
         "ENHANCEDSTATUSCODES".to_string(),
         auth_line(cfg),
     ];
-    if cfg.tls.is_some() && !tls_active {
+    if starttls {
         caps.push("STARTTLS".to_string());
     }
 
@@ -678,26 +683,44 @@ mod tests {
     }
 
     #[test]
-    fn starttls_is_advertised_only_when_available_and_not_yet_active() {
+    fn starttls_is_offered_only_when_it_can_actually_work() {
+        let dev: SocketAddr = "10.20.0.7:41234".parse().unwrap();
+        let other: SocketAddr = "10.20.0.8:41234".parse().unwrap();
+
         let mut cfg = Config::for_test();
         assert!(
-            !ehlo_lines(&cfg, false)
-                .iter()
-                .any(|l| l.contains("STARTTLS")),
+            !offer_starttls(&cfg, dev, false),
             "must not advertise TLS we cannot do"
         );
 
         cfg.tls = Some(crate::tls_stub());
+        assert!(offer_starttls(&cfg, dev, false));
         assert!(
-            ehlo_lines(&cfg, false)
+            !offer_starttls(&cfg, dev, true),
+            "re-advertising STARTTLS inside TLS confuses clients"
+        );
+
+        cfg.tls_trouble.remember(dev.ip());
+        assert!(!offer_starttls(&cfg, dev, false));
+        assert!(
+            offer_starttls(&cfg, other, false),
+            "one broken device must not take TLS away from the rest"
+        );
+
+        let mut off = Config::for_test();
+        off.tls = Some(crate::tls_stub());
+        off.starttls = false;
+        assert!(!offer_starttls(&off, other, false));
+
+        assert!(
+            ehlo_lines(&cfg, true)
                 .iter()
                 .any(|l| l.contains("STARTTLS"))
         );
         assert!(
-            !ehlo_lines(&cfg, true)
+            !ehlo_lines(&cfg, false)
                 .iter()
-                .any(|l| l.contains("STARTTLS")),
-            "re-advertising STARTTLS inside TLS confuses clients"
+                .any(|l| l.contains("STARTTLS"))
         );
     }
 
@@ -1336,6 +1359,31 @@ mod protocol {
         let h = run_script(b"MAIL FROM:<a@x>\r\nRCPT TO:<l@y>\r\nDATA\r\npartial line\r\n").await;
         assert_eq!(h.got.len(), 1);
         assert!(String::from_utf8_lossy(&h.got[0].data).contains("partial line"));
+    }
+
+    #[tokio::test]
+    async fn a_device_whose_handshake_failed_is_no_longer_offered_starttls() {
+        let (mut c, rx) = cfg();
+        c.tls = Some(crate::tls_stub());
+        c.tls_trouble.remember(peer().ip());
+        let h = dialog(
+            b"EHLO idrac\r\nSTARTTLS\r\n\
+              MAIL FROM:<a@b.c>\r\nRCPT TO:<x@y>\r\nDATA\r\nhi\r\n.\r\nQUIT\r\n",
+            c,
+            rx,
+        )
+        .await;
+        assert!(
+            !h.replies.contains("STARTTLS"),
+            "advertising it again just makes the device fail again: {:?}",
+            h.replies
+        );
+        assert!(
+            h.replies.contains("454 4.7.0 TLS is not available"),
+            "a device that asks anyway must be told no, not upgraded: {:?}",
+            h.replies
+        );
+        assert_eq!(h.got.len(), 1, "and the alert still gets through");
     }
 
     #[tokio::test]
