@@ -52,6 +52,7 @@ impl Response {
 pub struct Client {
     tls: Arc<rustls::ClientConfig>,
     timeout: Duration,
+    trace: bool,
 }
 
 impl Client {
@@ -65,7 +66,16 @@ impl Client {
         Self {
             tls: Arc::new(tls),
             timeout,
+            trace: false,
         }
+    }
+
+    pub fn with_trace(mut self, on: bool) -> Self {
+        self.trace = on;
+        self
+    }
+    pub(crate) fn tracing(&self) -> bool {
+        self.trace
     }
 
     pub(crate) fn tls(&self) -> Arc<rustls::ClientConfig> {

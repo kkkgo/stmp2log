@@ -655,7 +655,23 @@ impl Pipeline {
             ),
             url: (!self.base_url.is_empty()).then(|| format!("{}/", self.base_url)),
         };
-        s2l_notify::deliver(&self.client, ch, &payload, 1).await
+        let outcome = s2l_notify::deliver(&self.client, ch, &payload, 1).await;
+
+        if outcome.ok {
+            log::info(&format!(
+                "test notification to the {} channel went through in {} ms",
+                ch.kind(),
+                outcome.took_ms
+            ));
+        } else {
+            log::warn(&format!(
+                "test notification to the {} channel failed after {} ms: {}",
+                ch.kind(),
+                outcome.took_ms,
+                outcome.error
+            ));
+        }
+        outcome
     }
 }
 

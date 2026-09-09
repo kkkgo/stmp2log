@@ -186,7 +186,7 @@ async fn serve(
         store.clone(),
         state.clone(),
         settings.clone(),
-        s2l_notify::Client::new(Duration::from_secs(20)),
+        s2l_notify::Client::new(Duration::from_secs(20)).with_trace(log::debug_enabled()),
         events.clone(),
         base_url.clone(),
         push::Config {

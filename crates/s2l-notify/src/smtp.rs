@@ -169,7 +169,13 @@ async fn converse(
         io = upgrade(client, io, w.host, w.skip_verify).await?;
     }
 
-    let mut s = Session::new(io);
+    let tr = client.tracing().then(|| Trace {
+        who: format!("{}:{}", w.host, w.port),
+    });
+    if let Some(tr) = &tr {
+        tr.out('-', &format!("connected ({:?})", w.encryption));
+    }
+    let mut s = Session::new(io, tr.clone());
     s.expect("the greeting", &[220]).await?;
 
     let ehlo_name = from.rsplit('@').next().unwrap_or("stmp2log");
@@ -182,7 +188,7 @@ async fn converse(
         s.cmd("STARTTLS", "STARTTLS", &[220]).await?;
 
         let up = upgrade(client, s.into_inner(), w.host, w.skip_verify).await?;
-        s = Session::new(up);
+        s = Session::new(up, tr.clone());
         caps = s.hello(ehlo_name).await?;
     }
 
@@ -200,6 +206,9 @@ async fn converse(
     s.write_message(message).await?;
 
     let _ = s.cmd("QUIT", "QUIT", &[221]).await;
+    if let Some(tr) = &tr {
+        tr.out('-', "the server accepted the message");
+    }
     Ok(())
 }
 
@@ -291,12 +300,26 @@ impl Reply {
 
 struct Session {
     io: BufReader<Io>,
+
+    tr: Option<Trace>,
+}
+
+#[derive(Clone)]
+struct Trace {
+    who: String,
+}
+
+impl Trace {
+    fn out(&self, arrow: char, text: &str) {
+        eprintln!("[mail] {} {arrow} {}", self.who, text.trim_end());
+    }
 }
 
 impl Session {
-    fn new(io: Io) -> Self {
+    fn new(io: Io, tr: Option<Trace>) -> Self {
         Self {
             io: BufReader::new(io),
+            tr,
         }
     }
 
@@ -358,6 +381,11 @@ impl Session {
 
     async fn expect(&mut self, command: &'static str, want: &[u16]) -> Result<Reply, SmtpError> {
         let r = self.reply().await?;
+        if let Some(tr) = &self.tr {
+            for line in &r.lines {
+                tr.out('<', &format!("{} {line}", r.code));
+            }
+        }
         if !want.contains(&r.code) {
             return Err(SmtpError::Refused {
                 command,
@@ -374,6 +402,9 @@ impl Session {
         line: &str,
         want: &[u16],
     ) -> Result<Reply, SmtpError> {
+        if let Some(tr) = &self.tr {
+            tr.out('>', command);
+        }
         self.io.get_mut().write_all(line.as_bytes()).await?;
         self.io.get_mut().write_all(b"\r\n").await?;
         self.io.get_mut().flush().await?;
@@ -424,6 +455,9 @@ impl Session {
 
         io.write_all(b".\r\n").await?;
         io.flush().await?;
+        if let Some(tr) = &self.tr {
+            tr.out('>', &format!("<message, {} bytes> .", message.len()));
+        }
         self.expect("the message body", &[250]).await?;
         Ok(())
     }
