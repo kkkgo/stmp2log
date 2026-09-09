@@ -117,6 +117,9 @@ pub enum Channel {
 
         #[serde(default)]
         skip_verify: bool,
+
+        #[serde(default = "yes")]
+        mask_urls: bool,
     },
 }
 
@@ -151,6 +154,10 @@ fn ntfy_default_server() -> String {
 
 fn ntfy_default_priority() -> u8 {
     5
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn telegram_default_server() -> String {

@@ -595,6 +595,7 @@ mod tests {
             from: String::new(),
             to: vec!["oncall@example.com".into()],
             skip_verify: false,
+            mask_urls: true,
         }
     }
 

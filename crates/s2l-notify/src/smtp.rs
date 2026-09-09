@@ -70,6 +70,7 @@ pub async fn send(
         from,
         to,
         skip_verify,
+        mask_urls,
     } = ch
     else {
         return Err(SmtpError::Protocol("not an email channel".into()));
@@ -113,7 +114,13 @@ pub async fn send(
     } else {
         &p.title
     };
-    let message = compose(&from, &rcpt, subject, &body, now_ms);
+
+    let (subject, body) = if *mask_urls {
+        (mask(subject), mask(&body))
+    } else {
+        (subject.to_string(), body)
+    };
+    let message = compose(&from, &rcpt, &subject, &body, now_ms);
 
     let budget = client.timeout();
     tokio::time::timeout(
@@ -315,6 +322,10 @@ impl Trace {
     }
 }
 
+fn traced<'a>(command: &'a str, line: &'a str) -> &'a str {
+    if command == "AUTH" { command } else { line }
+}
+
 impl Session {
     fn new(io: Io, tr: Option<Trace>) -> Self {
         Self {
@@ -403,7 +414,7 @@ impl Session {
         want: &[u16],
     ) -> Result<Reply, SmtpError> {
         if let Some(tr) = &self.tr {
-            tr.out('>', command);
+            tr.out('>', traced(command, line));
         }
         self.io.get_mut().write_all(line.as_bytes()).await?;
         self.io.get_mut().write_all(b"\r\n").await?;
@@ -531,6 +542,22 @@ fn compose(from: &str, to: &[String], subject: &str, body: &str, now_ms: i64) ->
     out.into_bytes()
 }
 
+fn mask(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 16);
+    for piece in text.split_inclusive(char::is_whitespace) {
+        let token = piece.trim_end();
+        let space = &piece[token.len()..];
+        let lower = token.to_ascii_lowercase();
+        if lower.contains("://") || lower.starts_with("www.") {
+            out.push_str(&token.replace("://", "[:]//").replace('.', "[.]"));
+        } else {
+            out.push_str(token);
+        }
+        out.push_str(space);
+    }
+    out
+}
+
 fn base64_lines(data: &[u8]) -> String {
     use base64::Engine;
     let enc = base64::engine::general_purpose::STANDARD.encode(data);
@@ -610,6 +637,14 @@ mod tests {
         }
     }
 
+    fn channel_unmasked(port: u16) -> Channel {
+        let mut ch = channel(port);
+        if let Channel::Email { mask_urls, .. } = &mut ch {
+            *mask_urls = false;
+        }
+        ch
+    }
+
     fn channel(port: u16) -> Channel {
         Channel::Email {
             server: "127.0.0.1".into(),
@@ -620,6 +655,7 @@ mod tests {
             from: String::new(),
             to: vec!["ops@example.com".into()],
             skip_verify: false,
+            mask_urls: true,
         }
     }
 
@@ -830,6 +866,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn turning_masking_off_keeps_the_link_clickable() {
+        let (port, server) = fake_server().await;
+        let client = Client::new(Duration::from_secs(5));
+        send(&client, &channel_unmasked(port), &payload(), NOW)
+            .await
+            .unwrap();
+
+        use base64::Engine;
+        let data = server.await.unwrap().1;
+        let (_, body) = data.split_once("\r\n\r\n").unwrap();
+        let decoded = String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(body.replace("\r\n", ""))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            decoded.contains("http://10.0.0.2:8025/stmp2log/#/?id=7"),
+            "{decoded}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_notification_goes_out_as_a_real_message() {
         let (port, server) = fake_server().await;
         let client = Client::new(Duration::from_secs(5));
@@ -860,9 +919,14 @@ mod tests {
         )
         .unwrap();
         assert!(decoded.contains("机房温度 48C"), "{decoded}");
+
         assert!(
-            decoded.contains("http://10.0.0.2:8025/stmp2log/#/?id=7"),
-            "the link back to the log entry belongs in the body"
+            decoded.contains("http[:]//10[.]0[.]0[.]2:8025/stmp2log/#/?id=7"),
+            "the link back to the log entry belongs in the body, defanged: {decoded}"
+        );
+        assert!(
+            !decoded.contains("http://10.0.0.2:8025"),
+            "a clickable link is what gets the whole mail filed as spam: {decoded}"
         );
         assert!(head.contains("Subject: =?UTF-8?B?"), "{head}");
     }
@@ -915,5 +979,43 @@ mod tests {
             send(&client, &ch, &payload(), NOW).await,
             Err(SmtpError::NoRecipient)
         ));
+    }
+
+    #[test]
+    fn masking_defangs_links_and_leaves_prose_alone() {
+        assert_eq!(
+            mask("see http://10.0.0.2:8025/x?id=9 now"),
+            "see http[:]//10[.]0[.]0[.]2:8025/x?id=9 now"
+        );
+        assert_eq!(mask("www.example.com"), "www[.]example[.]com");
+        assert_eq!(
+            mask("https://nas.lan/ui"),
+            "https[:]//nas[.]lan/ui",
+            "the scheme separator and the host dots both have to go"
+        );
+
+        for prose in [
+            "Disk /dev/sda failed. Temp 48.5C",
+            "UPS on battery, load 42%. Runtime 12 min.",
+            "固件 v2.1.3 升级完成。",
+        ] {
+            assert_eq!(mask(prose), prose, "{prose}");
+        }
+
+        assert_eq!(mask("a\r\n\r\nb"), "a\r\n\r\nb");
+        assert_eq!(mask(""), "");
+    }
+
+    #[test]
+    fn the_trace_shows_addresses_but_never_credentials() {
+        assert_eq!(
+            traced("MAIL FROM", "MAIL FROM:<alarm@qq.com>"),
+            "MAIL FROM:<alarm@qq.com>"
+        );
+        assert_eq!(traced("EHLO", "EHLO qq.com"), "EHLO qq.com");
+
+        assert_eq!(traced("AUTH", "AUTH PLAIN AGRldjAxAHMzY3JldA=="), "AUTH");
+        assert_eq!(traced("AUTH", "AUTH LOGIN"), "AUTH");
+        assert_eq!(traced("AUTH", "czNjcmV0"), "AUTH");
     }
 }

@@ -653,7 +653,8 @@ impl Pipeline {
                 "This is a test notification from stmp2log at {}.",
                 log::fmt_local(log::now_ms())
             ),
-            url: (!self.base_url.is_empty()).then(|| format!("{}/", self.base_url)),
+
+            url: None,
         };
         let outcome = s2l_notify::deliver(&self.client, ch, &payload, 1).await;
 
@@ -1134,6 +1135,7 @@ mod tests {
                 from: "alerts@idc.local".into(),
                 to: vec!["default@example.com".into()],
                 skip_verify: false,
+                mask_urls: true,
             },
         }
     }
