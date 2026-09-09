@@ -28,10 +28,6 @@ pub struct Config {
 
     pub stmp_maxsize: usize,
 
-    pub stmp_starttls: bool,
-
-    pub stmp_compat_tls: bool,
-
     pub max_entries: usize,
     pub max_days: u32,
     pub keep_raw: bool,
@@ -54,8 +50,6 @@ impl Default for Config {
             stmp_user: String::new(),
             stmp_pass: String::new(),
             stmp_maxsize: 10 * 1024 * 1024,
-            stmp_starttls: true,
-            stmp_compat_tls: true,
 
             max_entries: 5000,
             max_days: 0,
@@ -219,20 +213,6 @@ pub fn parse(text: &str) -> Parsed {
                     cfg.stmp_maxsize
                 )),
             },
-            "stmp_compat_tls" => match parse_flag(value) {
-                Some(b) => cfg.stmp_compat_tls = b,
-                None => warnings.push(format!(
-                    "line {lineno}: stmp_compat_tls {value:?} is not a yes/no value, keeping {}",
-                    cfg.stmp_compat_tls
-                )),
-            },
-            "stmp_starttls" => match parse_flag(value) {
-                Some(b) => cfg.stmp_starttls = b,
-                None => warnings.push(format!(
-                    "line {lineno}: stmp_starttls {value:?} is not a yes/no value, keeping {}",
-                    cfg.stmp_starttls
-                )),
-            },
             "max_entries" => match value.parse::<usize>() {
                 Ok(n) if n > 0 => cfg.max_entries = n,
                 _ => warnings.push(format!(
@@ -299,15 +279,10 @@ fn strip_inline_comment(value: &str) -> &str {
 }
 
 fn parse_bool(value: &str) -> bool {
-    parse_flag(value).unwrap_or(false)
-}
-
-fn parse_flag(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" | "" => Some(false),
-        _ => None,
-    }
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn set_listen(
@@ -640,26 +615,6 @@ mod tests {
     fn push_url_loses_its_trailing_slash() {
         let p = parse("push_url=http://h:8025/stmp2log/\n");
         assert_eq!(p.config.push_url, "http://h:8025/stmp2log");
-    }
-
-    #[test]
-    fn starttls_is_on_unless_it_is_turned_off_in_so_many_words() {
-        assert!(
-            parse("stmp_listen=0.0.0.0:25\n").config.stmp_starttls,
-            "an existing config.ini has no such key and must keep advertising STARTTLS"
-        );
-        for no in ["0", "false", "no", "off"] {
-            assert!(!parse(&format!("stmp_starttls={no}\n")).config.stmp_starttls);
-        }
-        assert!(parse("stmp_starttls=1\n").config.stmp_starttls);
-
-        let p = parse("stmp_starttls=ture\n");
-        assert!(p.config.stmp_starttls);
-        assert!(
-            p.warnings.iter().any(|w| w.contains("stmp_starttls")),
-            "warnings were {:?}",
-            p.warnings
-        );
     }
 
     #[test]

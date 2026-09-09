@@ -84,8 +84,6 @@ pub struct Config {
     pub max_conns: usize,
     pub tls: Option<Arc<rustls::ServerConfig>>,
 
-    pub starttls: bool,
-
     pub compat: Option<compat::CompatTls>,
     pub auth: AuthPolicy,
 
@@ -107,7 +105,6 @@ impl Config {
             timeout: Duration::from_secs(300),
             max_conns: 64,
             tls: None,
-            starttls: true,
             compat: None,
             auth: AuthPolicy::AcceptAny,
             tls_trouble: TlsTrouble::default(),
@@ -405,8 +402,7 @@ fn handshake_failed(
         "Point the device at the plaintext port (stmp_listen) instead.".to_string()
     } else {
         format!(
-            "STARTTLS will no longer be offered to {}, so it can deliver in the clear \
-             (stmp_starttls=0 hides STARTTLS from every device).",
+            "STARTTLS will no longer be offered to {}, so it can deliver in the clear.",
             peer.ip()
         )
     };

@@ -291,7 +291,7 @@ fn auth_line(cfg: &Config) -> String {
 }
 
 fn offer_starttls(cfg: &Config, peer: SocketAddr, tls_active: bool) -> bool {
-    cfg.starttls && cfg.tls.is_some() && !tls_active && !cfg.tls_trouble.contains(peer.ip())
+    cfg.tls.is_some() && !tls_active && !cfg.tls_trouble.contains(peer.ip())
 }
 
 fn ehlo_lines(cfg: &Config, starttls: bool) -> Vec<String> {
@@ -717,11 +717,6 @@ mod tests {
             offer_starttls(&cfg, other, false),
             "one broken device must not take TLS away from the rest"
         );
-
-        let mut off = Config::for_test();
-        off.tls = Some(crate::tls_stub());
-        off.starttls = false;
-        assert!(!offer_starttls(&off, other, false));
 
         assert!(
             ehlo_lines(&cfg, true)
