@@ -30,6 +30,8 @@ pub struct Config {
 
     pub stmp_starttls: bool,
 
+    pub stmp_compat_tls: bool,
+
     pub max_entries: usize,
     pub max_days: u32,
     pub keep_raw: bool,
@@ -53,6 +55,7 @@ impl Default for Config {
             stmp_pass: String::new(),
             stmp_maxsize: 10 * 1024 * 1024,
             stmp_starttls: true,
+            stmp_compat_tls: true,
 
             max_entries: 5000,
             max_days: 0,
@@ -214,6 +217,13 @@ pub fn parse(text: &str) -> Parsed {
                 None => warnings.push(format!(
                     "line {lineno}: stmp_maxsize {value:?} is not a size, keeping {}",
                     cfg.stmp_maxsize
+                )),
+            },
+            "stmp_compat_tls" => match parse_flag(value) {
+                Some(b) => cfg.stmp_compat_tls = b,
+                None => warnings.push(format!(
+                    "line {lineno}: stmp_compat_tls {value:?} is not a yes/no value, keeping {}",
+                    cfg.stmp_compat_tls
                 )),
             },
             "stmp_starttls" => match parse_flag(value) {

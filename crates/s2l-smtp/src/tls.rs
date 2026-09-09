@@ -60,6 +60,19 @@ fn build(paths: &Paths) -> Result<Arc<ServerConfig>, SmtpError> {
 }
 
 fn generate(paths: &Paths, names: &[String]) -> Result<(), SmtpError> {
+    let key = rcgen::KeyPair::generate()
+        .map_err(|e| SmtpError::Tls(format!("could not generate a key pair: {e}")))?;
+    let cert = self_signed(names, &key)?;
+
+    if let Some(dir) = paths.cert.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&paths.cert, cert)?;
+    write_private(&paths.key, key.serialize_pem().as_bytes())?;
+    Ok(())
+}
+
+pub(crate) fn self_signed(names: &[String], key: &rcgen::KeyPair) -> Result<String, SmtpError> {
     let mut sans: Vec<String> = names.to_vec();
 
     for extra in ["stmp2log", "localhost"] {
@@ -78,21 +91,13 @@ fn generate(paths: &Paths, names: &[String]) -> Result<(), SmtpError> {
         dn
     };
 
-    let key = rcgen::KeyPair::generate()
-        .map_err(|e| SmtpError::Tls(format!("could not generate a key pair: {e}")))?;
     let cert = params
-        .self_signed(&key)
+        .self_signed(key)
         .map_err(|e| SmtpError::Tls(format!("could not self-sign: {e}")))?;
-
-    if let Some(dir) = paths.cert.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&paths.cert, cert.pem())?;
-    write_private(&paths.key, key.serialize_pem().as_bytes())?;
-    Ok(())
+    Ok(cert.pem())
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write;

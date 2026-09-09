@@ -12,6 +12,7 @@ stmp_listen=${STMP_LISTEN:-0.0.0.0:25}
 stmp_tls_listen=${STMP_TLS_LISTEN:-}
 stmp_hostname=${STMP_HOSTNAME:-stmp2log}
 stmp_starttls=${STMP_STARTTLS:-1}
+stmp_compat_tls=${STMP_COMPAT_TLS:-1}
 stmp_user=${STMP_USER:-}
 stmp_pass=${STMP_PASS:-}
 stmp_maxsize=${STMP_MAXSIZE:-10M}

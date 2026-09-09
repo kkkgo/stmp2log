@@ -43,6 +43,8 @@ Configuration file (every key is optional; see the readme):
   stmp_tls_listen=0.0.0.0:465 implicit-TLS SMTP listener (STARTTLS always works)
   stmp_hostname=<hostname>    SMTP greeting name, and the push source name
   stmp_user= / stmp_pass=     each is checked only if set; both empty accepts anything
+  stmp_starttls=1             advertise STARTTLS on the plaintext port
+  stmp_compat_tls=1           second TLS stack for devices rustls cannot serve
   stmp_maxsize=10M            per-message size limit
 
   max_entries=5000            keep at most this many messages
@@ -285,6 +287,19 @@ async fn start_smtp(
         }
     }
 
+    if smtp.tls.is_some() && cfg.stmp_compat_tls {
+        match s2l_smtp::load_compat_tls(&cfg.data, std::slice::from_ref(&cfg.stmp_hostname)) {
+            Ok(c) => {
+                smtp.compat = Some(c);
+                log::info(
+                    "devices whose TLS is too old for rustls will be served by the \
+                     compatibility stack (stmp_compat_tls=0 turns it off)",
+                );
+            }
+
+            Err(e) => log::warn(&format!("the compatibility TLS stack is unavailable: {e}")),
+        }
+    }
     s2l_smtp::serve(smtp)
         .await
         .map_err(|e| format!("could not start the SMTP listener: {e}"))

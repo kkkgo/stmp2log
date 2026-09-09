@@ -8,9 +8,11 @@ use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
+mod compat;
 mod session;
 pub mod tls;
 
+pub use compat::CompatTls;
 pub use session::{End, State};
 
 #[derive(Debug, thiserror::Error)]
@@ -83,6 +85,8 @@ pub struct Config {
     pub tls: Option<Arc<rustls::ServerConfig>>,
 
     pub starttls: bool,
+
+    pub compat: Option<compat::CompatTls>,
     pub auth: AuthPolicy,
 
     pub tls_trouble: TlsTrouble,
@@ -104,6 +108,7 @@ impl Config {
             max_conns: 64,
             tls: None,
             starttls: true,
+            compat: None,
             auth: AuthPolicy::AcceptAny,
             tls_trouble: TlsTrouble::default(),
             trace: false,
@@ -194,12 +199,12 @@ async fn handle(
 
     if implicit_tls {
         tr.note("connected (implicit TLS)");
-        let Some(mut stream) = accept_tls(sock, peer, cfg, true, &tr).await else {
+        let Some(accepted) = accept_tls(sock, peer, cfg, true, &tr).await else {
             return Ok(());
         };
         let mut st = State::default();
 
-        session::run(&mut stream, &mut st, cfg, peer, true, true, &tr).await?;
+        run_encrypted(accepted, &mut st, cfg, peer, true, &tr).await?;
         tr.note("session ended");
         return Ok(());
     }
@@ -214,18 +219,33 @@ async fn handle(
             Ok(())
         }
         End::StartTls => {
-            let Some(mut stream) = accept_tls(sock, peer, cfg, false, &tr).await else {
+            let Some(accepted) = accept_tls(sock, peer, cfg, false, &tr).await else {
                 return Ok(());
             };
             tr.note("TLS handshake done");
 
             let mut fresh = State::default();
 
-            session::run(&mut stream, &mut fresh, cfg, peer, true, false, &tr).await?;
+            run_encrypted(accepted, &mut fresh, cfg, peer, false, &tr).await?;
             tr.note("session ended");
             Ok(())
         }
     }
+}
+
+enum Accepted {
+    Modern(Box<tokio_rustls::server::TlsStream<TcpStream>>),
+    Legacy(compat::CompatStream),
+}
+
+async fn peek_hello(sock: &TcpStream, cfg: &Config) -> Option<Vec<u8>> {
+    let mut buf = [0u8; 1024];
+
+    let n = tokio::time::timeout(cfg.timeout, sock.peek(&mut buf))
+        .await
+        .ok()?
+        .ok()?;
+    (n > 0).then(|| buf[..n].to_vec())
 }
 
 async fn accept_tls(
@@ -234,8 +254,27 @@ async fn accept_tls(
     cfg: &Config,
     implicit_tls: bool,
     tr: &session::Trace,
-) -> Option<tokio_rustls::server::TlsStream<TcpStream>> {
+) -> Option<Accepted> {
     let tls = cfg.tls.clone()?;
+
+    if let Some(compat) = &cfg.compat {
+        let hello = peek_hello(&sock, cfg).await.unwrap_or_default();
+        if compat::wants_legacy(&hello, &tls) {
+            tr.note("client hello offers nothing rustls implements: trying the legacy TLS stack");
+            return match compat.accept(sock).await {
+                Ok(s) => {
+                    info(&format!("{peer} negotiated legacy TLS: {}", s.describe()));
+                    Some(Accepted::Legacy(s))
+                }
+                Err(e) => {
+                    let io = std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string());
+                    handshake_failed(cfg, peer, implicit_tls, &io, None);
+                    None
+                }
+            };
+        }
+    }
+
     let acceptor = tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), sock);
     let start = match acceptor.await {
         Ok(s) => s,
@@ -244,10 +283,10 @@ async fn accept_tls(
             return None;
         }
     };
-    let hello = describe_client_hello(&start.client_hello());
+    let hello = describe_client_hello(&start.client_hello(), &tls);
     tr.note(&format!("client hello: {hello}"));
     match start.into_stream(tls).await {
-        Ok(s) => Some(s),
+        Ok(s) => Some(Accepted::Modern(Box::new(s))),
         Err(e) => {
             handshake_failed(cfg, peer, implicit_tls, &e, Some(&hello));
             None
@@ -255,7 +294,25 @@ async fn accept_tls(
     }
 }
 
-fn describe_client_hello(ch: &rustls::server::ClientHello<'_>) -> String {
+async fn run_encrypted(
+    accepted: Accepted,
+    st: &mut State,
+    cfg: &Config,
+    peer: SocketAddr,
+    greet: bool,
+    tr: &session::Trace,
+) -> std::io::Result<()> {
+    match accepted {
+        Accepted::Modern(mut s) => session::run(&mut *s, st, cfg, peer, true, greet, tr).await?,
+        Accepted::Legacy(mut s) => session::run(&mut s, st, cfg, peer, true, greet, tr).await?,
+    };
+    Ok(())
+}
+
+fn describe_client_hello(
+    ch: &rustls::server::ClientHello<'_>,
+    server: &rustls::ServerConfig,
+) -> String {
     let groups = match ch.named_groups() {
         Some(g) if !g.is_empty() => g
             .iter()
@@ -273,8 +330,19 @@ fn describe_client_hello(ch: &rustls::server::ClientHello<'_>) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     let rsa_kx = ch.cipher_suites().iter().any(|s| is_static_rsa(*s));
+    let common = ch
+        .cipher_suites()
+        .iter()
+        .filter(|c| {
+            server
+                .crypto_provider()
+                .cipher_suites
+                .iter()
+                .any(|s| s.suite() == **c)
+        })
+        .count();
     format!(
-        "sni={} groups=[{groups}] rsa-kx={} suites=[{suites}]",
+        "sni={} common-suites={common} groups=[{groups}] rsa-kx={} suites=[{suites}]",
         ch.server_name().unwrap_or("<none>"),
         if rsa_kx { "yes" } else { "no" }
     )
@@ -316,9 +384,8 @@ fn handshake_failed(
     };
     let why = match rejection {
         rustls::Error::PeerIncompatible(rustls::PeerIncompatible::NoKxGroupsInCommon) => {
-            "This device's ClientHello names no key-exchange group stmp2log supports \
-             (old stacks often send no supported_groups extension at all), so its TLS \
-             can never be negotiated here."
+            "This device and stmp2log have no usable TLS in common; see common-suites \
+             (how many of its cipher suites stmp2log implements) and rsa-kx below."
         }
         rustls::Error::PeerIncompatible(_) => {
             "This device's TLS is older than the TLS 1.2 + ECDHE that stmp2log accepts."
@@ -355,6 +422,10 @@ fn handshake_failed(
 
 pub fn load_tls(data: &Path, names: &[String]) -> Result<Arc<rustls::ServerConfig>, SmtpError> {
     tls::load_or_create(data, names)
+}
+
+pub fn load_compat_tls(data: &Path, names: &[String]) -> Result<CompatTls, SmtpError> {
+    CompatTls::load_or_create(data, names)
 }
 
 pub fn install_crypto_provider() {
