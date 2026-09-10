@@ -49,7 +49,7 @@ pub struct Pipeline {
     pub client: s2l_notify::Client,
     pub events: Option<broadcast::Sender<String>>,
 
-    push: push::Config,
+    push_pass: String,
 
     cooldowns: Mutex<HashMap<u32, Instant>>,
     notify_log: Mutex<std::collections::VecDeque<NotifyLog>>,
@@ -67,7 +67,7 @@ impl Pipeline {
         client: s2l_notify::Client,
         events: Option<broadcast::Sender<String>>,
         base_url: String,
-        push: push::Config,
+        push_pass: String,
     ) -> Self {
         Self {
             store,
@@ -75,12 +75,16 @@ impl Pipeline {
             settings,
             client,
             events,
-            push,
+            push_pass,
             cooldowns: Mutex::new(HashMap::new()),
             notify_log: Mutex::new(std::collections::VecDeque::new()),
             retry: retry::Queue::default(),
             base_url,
         }
+    }
+
+    fn push_url(&self) -> String {
+        self.settings.load().push_url.clone()
     }
 
     fn link_base(&self) -> String {
@@ -218,10 +222,10 @@ impl Pipeline {
             }
         }
 
-        let push = (self.push.enabled() && origin.is_empty()).then(|| {
+        let push = (!settings.push_url.is_empty() && origin.is_empty()).then(|| {
             use base64::Engine;
             push::Payload {
-                hostname: self.push.hostname.clone(),
+                hostname: settings.stmp_hostname.clone(),
                 ts: log::now_ms(),
                 envelope_from: d.envelope_from.clone(),
                 rcpt: d.rcpt.clone(),
@@ -409,19 +413,17 @@ impl Pipeline {
 
     async fn forward(&self, job: &NotifyJob, payload: push::Payload) {
         let started = Instant::now();
-        let err = match push::send(&self.client, &self.push.url, &self.push.pass, &payload).await {
+        let url = self.push_url();
+        let err = match push::send(&self.client, &url, &self.push_pass, &payload).await {
             Ok(()) => {
-                log::debug(&format!("pushed #{} to {}", job.id, self.push.url));
+                log::debug(&format!("pushed #{} to {url}", job.id));
                 self.retry.recovered();
 
                 return;
             }
             Err(e) => e,
         };
-        log::warn(&format!(
-            "could not push #{} to {}: {err}",
-            job.id, self.push.url
-        ));
+        log::warn(&format!("could not push #{} to {url}: {err}", job.id));
 
         let item = Item::Push(QueuedPush {
             id: job.id,
@@ -449,9 +451,8 @@ impl Pipeline {
     }
 
     fn push_label(&self) -> String {
-        let host = self
-            .push
-            .url
+        let url = self.push_url();
+        let host = url
             .rsplit("://")
             .next()
             .unwrap_or("")
@@ -621,8 +622,8 @@ impl Pipeline {
                 let started = Instant::now();
                 let r = push::resend(
                     &self.client,
-                    &self.push.url,
-                    &self.push.pass,
+                    &self.push_url(),
+                    &self.push_pass,
                     &mut q.payload,
                     log::now_ms(),
                 )
@@ -748,7 +749,7 @@ mod tests {
             s2l_notify::Client::new(Duration::from_secs(1)),
             None,
             auto,
-            push::Config::default(),
+            String::new(),
         ))
     }
 
@@ -1222,6 +1223,31 @@ mod tests {
         );
         std::fs::remove_dir_all(&d1).ok();
         std::fs::remove_dir_all(&d2).ok();
+    }
+
+    #[test]
+    fn the_push_target_follows_the_settings_without_a_restart() {
+        let dir = tmpdir("push-live");
+        let p = pipeline_with(
+            &dir,
+            State::default(),
+            Settings {
+                push_url: "http://up.example.com:8025/stmp2log".into(),
+                ..Settings::default_for_test()
+            },
+        );
+        assert_eq!(p.push_label(), "up.example.com:8025");
+
+        p.settings.store(Arc::new(Settings {
+            push_url: "http://other.example.com/s".into(),
+            ..Settings::default_for_test()
+        }));
+        assert_eq!(
+            p.push_url(),
+            "http://other.example.com/s",
+            "changing it in the web UI must not need a restart"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

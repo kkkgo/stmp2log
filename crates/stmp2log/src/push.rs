@@ -148,20 +148,6 @@ pub async fn resend(
     send(client, push_url, web_pass, payload).await
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct Config {
-    pub url: String,
-
-    pub pass: String,
-
-    pub hostname: String,
-}
-impl Config {
-    pub fn enabled(&self) -> bool {
-        !self.url.is_empty()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

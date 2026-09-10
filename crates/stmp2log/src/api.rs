@@ -24,6 +24,8 @@ pub struct Handler {
     pub config_path: std::path::PathBuf,
 
     pub push_pass: String,
+
+    pub smtp: Option<s2l_smtp::Handle>,
     pub version: &'static str,
     pub started_at: i64,
 }
@@ -298,17 +300,19 @@ impl Handler {
     }
 
     async fn put_settings(&self, req: &ApiReq) -> Reply {
-        let Ok(mut want) = req.json::<Settings>() else {
+        let Ok(patch) = req.json::<config::SettingsPatch>() else {
             return respond::error(
                 400,
-                "expected {max_entries, max_days, keep_raw, keep_attachments, retry_queue, web_url}",
+                "expected an object with any of {max_entries, max_days, keep_raw, \
+                 keep_attachments, retry_queue, web_url, push_url, stmp_hostname, \
+                 stmp_user, stmp_pass, stmp_maxsize}",
             );
         };
-        if want.max_entries == 0 {
-            return respond::error(400, "max_entries must be at least 1");
-        }
 
-        want.web_url = config::normalize_web_url(&want.web_url);
+        let want = match patch.apply(&self.settings.load()) {
+            Ok(v) => v,
+            Err(e) => return respond::error(400, &e),
+        };
         if let Err(e) = config::update(&self.config_path, &want.as_ini()) {
             log::error(&format!(
                 "could not write {}: {e}",
@@ -319,6 +323,14 @@ impl Handler {
         let retry_queue = want.retry_queue;
         let retention = want.retention();
         let saved = json_of(&want);
+
+        if let Some(smtp) = &self.smtp {
+            smtp.set_runtime(
+                want.stmp_hostname.clone(),
+                want.max_size(),
+                want.auth_policy(),
+            );
+        }
         self.settings.store(Arc::new(want));
         log::info(&format!("settings saved to {}", self.config_path.display()));
 

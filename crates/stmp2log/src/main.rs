@@ -54,8 +54,10 @@ Configuration file (every key is optional; see the readme):
   retry_queue=0               hold at most this many undelivered alerts while
                               the network is down and send them once it is
                               back; 0 (the default) means no limit
-    (these five and web_url can also be changed in the web UI, which writes
-     them back here)
+
+  Everything except the listeners, data, web_pass and web_path can also be
+  changed in the web UI: it applies them right away and writes them back here,
+  keeping your comments and layout.
 ";
 
 fn main() {
@@ -200,11 +202,7 @@ async fn serve(
         s2l_notify::Client::new(Duration::from_secs(20)).with_trace(log::debug_enabled()),
         events.clone(),
         auto_url,
-        push::Config {
-            url: cfg.push_url.clone(),
-            pass: cfg.web_pass.clone(),
-            hostname: cfg.stmp_hostname.clone(),
-        },
+        cfg.web_pass.clone(),
     ));
     tokio::spawn(pipe.clone().run(rx));
 
@@ -215,7 +213,7 @@ async fn serve(
         n => format!("at most {n} undelivered alert(s) are queued while the network is down"),
     });
 
-    start_smtp(&cfg, tx).await?;
+    let smtp = start_smtp(&cfg, tx).await?;
 
     if let Some(listen) = cfg.web_listen {
         start_web(
@@ -228,6 +226,7 @@ async fn serve(
             store,
             pipe,
             events,
+            smtp,
         )
         .await?;
         log::info(&format!("web UI at {console_url}/"));
@@ -261,10 +260,10 @@ async fn serve(
 async fn start_smtp(
     cfg: &config::Config,
     tx: tokio::sync::mpsc::Sender<s2l_smtp::Delivered>,
-) -> Result<(), String> {
+) -> Result<Option<s2l_smtp::Handle>, String> {
     if cfg.stmp_listen.is_none() && cfg.stmp_tls_listen.is_none() {
         log::info("SMTP is disabled (stmp_listen is empty)");
-        return Ok(());
+        return Ok(None);
     }
 
     let mut smtp = s2l_smtp::Config::new(tx);
@@ -276,11 +275,8 @@ async fn start_smtp(
         log::info("SMTP session tracing is on (-d): every command and reply is logged");
     }
 
+    smtp.auth = cfg.settings().auth_policy();
     if !cfg.stmp_user.is_empty() || !cfg.stmp_pass.is_empty() {
-        smtp.auth = s2l_smtp::AuthPolicy::Require {
-            user: cfg.stmp_user.clone(),
-            pass: cfg.stmp_pass.clone(),
-        };
         log::info(match (cfg.stmp_user.is_empty(), cfg.stmp_pass.is_empty()) {
             (false, false) => "SMTP AUTH will be checked against stmp_user and stmp_pass",
             (false, true) => "SMTP AUTH will be checked against stmp_user; any password passes",
@@ -314,6 +310,7 @@ async fn start_smtp(
     }
     s2l_smtp::serve(smtp)
         .await
+        .map(Some)
         .map_err(|e| format!("could not start the SMTP listener: {e}"))
 }
 
@@ -328,6 +325,7 @@ async fn start_web(
     store: Arc<s2l_store::Store>,
     pipe: Arc<pipeline::Pipeline>,
     events: Option<tokio::sync::broadcast::Sender<String>>,
+    smtp: Option<s2l_smtp::Handle>,
 ) -> Result<(), String> {
     let asset = assets::prepare(base)?;
     let auth = Arc::new(ArcSwap::from_pointee(s2l_web::Auth::new(&cfg.web_pass)));
@@ -341,6 +339,7 @@ async fn start_web(
         data_dir: cfg.data.clone(),
         config_path: config_path.to_path_buf(),
         push_pass: cfg.web_pass.clone(),
+        smtp,
         version: VERSION,
         started_at: log::now_ms(),
     };

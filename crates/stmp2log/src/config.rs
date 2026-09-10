@@ -6,6 +6,8 @@ pub const DEFAULT_WEB_PATH: &str = "stmp2log";
 
 pub const DEFAULT_DATA: &str = "./data";
 
+pub const DEFAULT_MAXSIZE: usize = 10 * 1024 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub stmp_listen: Option<SocketAddr>,
@@ -52,7 +54,7 @@ impl Default for Config {
             stmp_hostname: default_hostname(),
             stmp_user: String::new(),
             stmp_pass: String::new(),
-            stmp_maxsize: 10 * 1024 * 1024,
+            stmp_maxsize: DEFAULT_MAXSIZE,
 
             max_entries: 5000,
             max_days: 0,
@@ -77,6 +79,113 @@ pub struct Settings {
 
     #[serde(default)]
     pub web_url: String,
+
+    #[serde(default)]
+    pub push_url: String,
+
+    #[serde(default)]
+    pub stmp_hostname: String,
+
+    #[serde(default)]
+    pub stmp_user: String,
+    #[serde(default)]
+    pub stmp_pass: String,
+
+    #[serde(default)]
+    pub stmp_maxsize: String,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct SettingsPatch {
+    pub max_entries: Option<usize>,
+    pub max_days: Option<u32>,
+    pub keep_raw: Option<bool>,
+    pub keep_attachments: Option<bool>,
+    pub retry_queue: Option<usize>,
+    pub web_url: Option<String>,
+    pub push_url: Option<String>,
+    pub stmp_hostname: Option<String>,
+    pub stmp_user: Option<String>,
+    pub stmp_pass: Option<String>,
+    pub stmp_maxsize: Option<String>,
+}
+
+impl SettingsPatch {
+    pub fn apply(self, cur: &Settings) -> Result<Settings, String> {
+        let mut next = cur.clone();
+        if let Some(v) = self.max_entries {
+            if v == 0 {
+                return Err("max_entries must be at least 1".into());
+            }
+            next.max_entries = v;
+        }
+        if let Some(v) = self.max_days {
+            next.max_days = v;
+        }
+        if let Some(v) = self.keep_raw {
+            next.keep_raw = v;
+        }
+        if let Some(v) = self.keep_attachments {
+            next.keep_attachments = v;
+        }
+        if let Some(v) = self.retry_queue {
+            next.retry_queue = v;
+        }
+
+        if let Some(v) = self.web_url {
+            next.web_url = normalize_url(&v);
+        }
+        if let Some(v) = self.push_url {
+            next.push_url = normalize_url(&v);
+        }
+        if let Some(v) = self.stmp_hostname {
+            let v = v.trim();
+
+            next.stmp_hostname = if v.is_empty() {
+                default_hostname()
+            } else {
+                ini_safe("stmp_hostname", v)?;
+                if v.split_whitespace().count() != 1 {
+                    return Err("stmp_hostname cannot contain spaces".into());
+                }
+                v.to_string()
+            };
+        }
+        if let Some(v) = self.stmp_user {
+            ini_safe("stmp_user", &v)?;
+            next.stmp_user = v;
+        }
+        if let Some(v) = self.stmp_pass {
+            ini_safe("stmp_pass", &v)?;
+            next.stmp_pass = v;
+        }
+        if let Some(v) = self.stmp_maxsize {
+            let bytes = parse_size(&v)
+                .filter(|n| *n > 0)
+                .ok_or("stmp_maxsize must be a size like 512k, 10M or 1G")?;
+            next.stmp_maxsize = human_size(bytes);
+        }
+        Ok(next)
+    }
+}
+
+fn ini_safe(key: &str, value: &str) -> Result<(), String> {
+    match value.contains(['#', ';']) {
+        true => Err(format!(
+            "{key} cannot contain '#' or ';': config.ini treats them as the start of a comment"
+        )),
+        false => Ok(()),
+    }
+}
+
+fn human_size(bytes: usize) -> String {
+    for (unit, mult) in [("G", 1 << 30), ("M", 1 << 20), ("k", 1 << 10)] {
+        if bytes >= mult && bytes % mult == 0 {
+            return format!("{}{unit}", bytes / mult);
+        }
+    }
+    bytes.to_string()
 }
 
 fn default_retry_queue() -> usize {
@@ -104,17 +213,36 @@ impl Settings {
             ("keep_attachments", bool_to_ini(self.keep_attachments)),
             ("retry_queue", self.retry_queue.to_string()),
             ("web_url", self.web_url.clone()),
+            ("push_url", self.push_url.clone()),
+            ("stmp_hostname", self.stmp_hostname.clone()),
+            ("stmp_user", self.stmp_user.clone()),
+            ("stmp_pass", self.stmp_pass.clone()),
+            ("stmp_maxsize", self.stmp_maxsize.clone()),
         ]
+    }
+
+    pub fn max_size(&self) -> usize {
+        parse_size(&self.stmp_maxsize).unwrap_or(DEFAULT_MAXSIZE)
+    }
+
+    pub fn auth_policy(&self) -> s2l_smtp::AuthPolicy {
+        if self.stmp_user.is_empty() && self.stmp_pass.is_empty() {
+            return s2l_smtp::AuthPolicy::AcceptAny;
+        }
+        s2l_smtp::AuthPolicy::Require {
+            user: self.stmp_user.clone(),
+            pass: self.stmp_pass.clone(),
+        }
     }
 }
 
-pub fn normalize_web_url(value: &str) -> String {
+pub fn normalize_url(value: &str) -> String {
     let cut = value.find(['#', ';']).unwrap_or(value.len());
     value[..cut].trim().trim_end_matches('/').to_string()
 }
 
 pub fn external_base(web_url: &str) -> String {
-    let mut url = normalize_web_url(web_url);
+    let mut url = normalize_url(web_url);
     if !url.is_empty() && !url.contains("://") {
         url.insert_str(0, "http://");
     }
@@ -130,6 +258,11 @@ impl Config {
             keep_attachments: self.keep_attachments,
             retry_queue: self.retry_queue,
             web_url: self.web_url.clone(),
+            push_url: self.push_url.clone(),
+            stmp_hostname: self.stmp_hostname.clone(),
+            stmp_user: self.stmp_user.clone(),
+            stmp_pass: self.stmp_pass.clone(),
+            stmp_maxsize: human_size(self.stmp_maxsize),
         }
     }
 }
@@ -219,7 +352,7 @@ pub fn parse(text: &str) -> Parsed {
                     value.to_string()
                 };
             }
-            "web_url" => cfg.web_url = normalize_web_url(value),
+            "web_url" => cfg.web_url = normalize_url(value),
             "push_url" => cfg.push_url = value.trim_end_matches('/').to_string(),
             "stmp_hostname" => {
                 if !value.is_empty() {
@@ -670,6 +803,77 @@ mod tests {
         );
     }
 
+    fn patch(json: &str) -> SettingsPatch {
+        serde_json::from_str(json).expect("valid patch json")
+    }
+
+    #[test]
+    fn a_partial_settings_patch_leaves_everything_else_alone() {
+        let cur = Settings {
+            stmp_pass: "secret".into(),
+            max_entries: 999,
+            ..Settings::default_for_test()
+        };
+        let got = patch(r#"{"max_days": 7}"#).apply(&cur).unwrap();
+        assert_eq!(got.max_days, 7);
+        assert_eq!(
+            got.stmp_pass, "secret",
+            "a field nobody mentioned must come back untouched"
+        );
+        assert_eq!(got.max_entries, 999);
+    }
+
+    #[test]
+    fn credentials_config_ini_cannot_hold_are_refused_up_front() {
+        let cur = Settings::default_for_test();
+        let e = patch(r#"{"stmp_pass": "pa#ss"}"#).apply(&cur).unwrap_err();
+        assert!(
+            e.contains("stmp_pass"),
+            "the message must name the field so the user can fix it: {e}"
+        );
+
+        assert_eq!(parse("stmp_pass=pa#ss\n").config.stmp_pass, "pa");
+    }
+
+    #[test]
+    fn a_size_comes_back_the_way_a_person_writes_it() {
+        let cur = Settings::default_for_test();
+        let got = patch(r#"{"stmp_maxsize": "20m"}"#).apply(&cur).unwrap();
+        assert_eq!(got.stmp_maxsize, "20M");
+        assert_eq!(got.max_size(), 20 * 1024 * 1024);
+
+        assert!(patch(r#"{"stmp_maxsize": "big"}"#).apply(&cur).is_err());
+        assert!(patch(r#"{"stmp_maxsize": "0"}"#).apply(&cur).is_err());
+    }
+
+    #[test]
+    fn an_empty_hostname_means_the_system_one() {
+        let cur = Settings::default_for_test();
+        let got = patch(r#"{"stmp_hostname": "  "}"#).apply(&cur).unwrap();
+        assert_eq!(
+            got.stmp_hostname,
+            default_hostname(),
+            "an empty key in config.ini means this, and the web UI must not mean something else"
+        );
+    }
+
+    #[test]
+    fn auth_is_only_enforced_once_something_is_set() {
+        let none = Settings::default_for_test();
+        assert!(matches!(
+            none.auth_policy(),
+            s2l_smtp::AuthPolicy::AcceptAny
+        ));
+        let only_pass = Settings {
+            stmp_pass: "x".into(),
+            ..Settings::default_for_test()
+        };
+        assert!(
+            matches!(only_pass.auth_policy(), s2l_smtp::AuthPolicy::Require { user, .. } if user.is_empty()),
+            "with only a password set, any account name still passes: it is what tells devices apart"
+        );
+    }
+
     #[test]
     fn maxsize_accepts_suffixes() {
         assert_eq!(
@@ -750,6 +954,12 @@ mod tests {
             keep_attachments: true,
             retry_queue: 42,
             web_url: "https://s2l.example.com/stmp2log".into(),
+            push_url: "http://up.example.com:8025/stmp2log".into(),
+            stmp_hostname: "idc-a".into(),
+            stmp_user: "device".into(),
+            stmp_pass: "whatever".into(),
+
+            stmp_maxsize: "20M".into(),
         };
         update(&p, &want.as_ini()).unwrap();
         let got = parse(&std::fs::read_to_string(&p).unwrap())

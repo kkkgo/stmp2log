@@ -120,19 +120,46 @@ impl Config {
     }
 }
 
-pub async fn serve(cfg: Config) -> Result<(), SmtpError> {
-    let limit = Arc::new(tokio::sync::Semaphore::new(cfg.max_conns));
+#[derive(Clone)]
+pub struct Handle(Arc<std::sync::RwLock<Arc<Config>>>);
 
-    for &addr in &cfg.bind {
+impl Handle {
+    fn current(&self) -> Arc<Config> {
+        match self.0.read() {
+            Ok(g) => g.clone(),
+
+            Err(p) => p.into_inner().clone(),
+        }
+    }
+
+    pub fn set_runtime(&self, hostname: String, max_size: usize, auth: AuthPolicy) {
+        let mut next = (*self.current()).clone();
+        next.hostname = hostname;
+        next.max_size = max_size;
+        next.auth = auth;
+        let next = Arc::new(next);
+        match self.0.write() {
+            Ok(mut g) => *g = next,
+            Err(p) => *p.into_inner() = next,
+        }
+    }
+}
+
+pub async fn serve(cfg: Config) -> Result<Handle, SmtpError> {
+    let limit = Arc::new(tokio::sync::Semaphore::new(cfg.max_conns));
+    let (bind, tls_bind, has_tls) = (cfg.bind.clone(), cfg.tls_bind.clone(), cfg.tls.is_some());
+    let handle = Handle(Arc::new(std::sync::RwLock::new(Arc::new(cfg))));
+
+    for addr in bind {
         let l = TcpListener::bind(addr)
             .await
             .map_err(|source| SmtpError::Bind { addr, source })?;
         info(&format!("SMTP listening on {addr}"));
-        spawn_accept_loop(l, cfg.clone(), limit.clone(), false);
+        spawn_accept_loop(l, handle.clone(), limit.clone(), false);
     }
 
-    for &addr in &cfg.tls_bind {
-        if cfg.tls.is_none() {
+    for addr in tls_bind {
+        if !has_tls {
             warn(&format!(
                 "skipping implicit-TLS listener on {addr}: TLS is not configured"
             ));
@@ -142,15 +169,15 @@ pub async fn serve(cfg: Config) -> Result<(), SmtpError> {
             .await
             .map_err(|source| SmtpError::Bind { addr, source })?;
         info(&format!("SMTP listening on {addr} (implicit TLS)"));
-        spawn_accept_loop(l, cfg.clone(), limit.clone(), true);
+        spawn_accept_loop(l, handle.clone(), limit.clone(), true);
     }
 
-    Ok(())
+    Ok(handle)
 }
 
 fn spawn_accept_loop(
     listener: TcpListener,
-    cfg: Config,
+    handle: Handle,
     limit: Arc<tokio::sync::Semaphore>,
     implicit_tls: bool,
 ) {
@@ -173,10 +200,11 @@ fn spawn_accept_loop(
                 .await;
                 continue;
             };
-            let cfg = cfg.clone();
+
+            let cfg = handle.current();
             tokio::spawn(async move {
                 let _permit = permit;
-                if let Err(e) = handle(sock, peer, &cfg, implicit_tls).await {
+                if let Err(e) = serve_conn(sock, peer, &cfg, implicit_tls).await {
                     let _ = e;
                 }
             });
@@ -184,7 +212,7 @@ fn spawn_accept_loop(
     });
 }
 
-async fn handle(
+async fn serve_conn(
     sock: TcpStream,
     peer: SocketAddr,
     cfg: &Config,
