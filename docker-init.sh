@@ -19,6 +19,7 @@ data=/data
 web_listen=${WEB_LISTEN:-0.0.0.0:8025}
 web_pass=${WEB_PASS:-}
 web_path=${WEB_PATH:-stmp2log}
+web_url=${WEB_URL:-}
 push_url=${PUSH_URL:-}
 
 max_entries=${MAX_ENTRIES:-5000}

@@ -83,6 +83,14 @@ impl Pipeline {
         }
     }
 
+    fn link_base(&self) -> String {
+        let configured = &self.settings.load().web_url;
+        if configured.is_empty() {
+            return self.base_url.clone();
+        }
+        crate::config::external_base(configured)
+    }
+
     pub async fn run(self: Arc<Self>, mut rx: mpsc::Receiver<s2l_smtp::Delivered>) {
         while let Some(d) = rx.recv().await {
             let me = self.clone();
@@ -303,8 +311,8 @@ impl Pipeline {
             headers: &[],
         };
 
-        let url = (job.id != 0 && !self.base_url.is_empty())
-            .then(|| format!("{}/#/?id={}", self.base_url, job.id));
+        let base = self.link_base();
+        let url = (job.id != 0 && !base.is_empty()).then(|| format!("{base}/#/?id={}", job.id));
 
         for rule in state.rules.iter().filter(|r| r.enabled) {
             if !rule.matcher.matches(&target) {
@@ -724,6 +732,14 @@ mod tests {
         pipeline_with(dir, state, Settings::default_for_test())
     }
     fn pipeline_with(dir: &std::path::Path, state: State, settings: Settings) -> Arc<Pipeline> {
+        pipeline_full(dir, state, settings, String::new())
+    }
+    fn pipeline_full(
+        dir: &std::path::Path,
+        state: State,
+        settings: Settings,
+        auto: String,
+    ) -> Arc<Pipeline> {
         let store = Arc::new(Store::open(dir, settings.retention()).unwrap());
         Arc::new(Pipeline::new(
             store,
@@ -731,7 +747,7 @@ mod tests {
             Arc::new(ArcSwap::from_pointee(settings)),
             s2l_notify::Client::new(Duration::from_secs(1)),
             None,
-            String::new(),
+            auto,
             push::Config::default(),
         ))
     }
@@ -1171,6 +1187,41 @@ mod tests {
             "the rule's recipients must survive the trip through the queue"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_notification_link_follows_the_address_set_in_the_web_ui() {
+        let auto = "http://10.0.0.2:8025/stmp2log";
+        let d1 = tmpdir("link-auto");
+        let p = pipeline_full(
+            &d1,
+            State::default(),
+            Settings::default_for_test(),
+            auto.into(),
+        );
+        assert_eq!(
+            p.link_base(),
+            auto,
+            "nothing filled in: keep the address we found ourselves"
+        );
+
+        let d2 = tmpdir("link-set");
+        let p = pipeline_full(
+            &d2,
+            State::default(),
+            Settings {
+                web_url: "nas.lan:8025/s2l".into(),
+                ..Settings::default_for_test()
+            },
+            auto.into(),
+        );
+        assert_eq!(
+            p.link_base(),
+            "http://nas.lan:8025/s2l",
+            "what the user typed beats what we guessed, path and all"
+        );
+        std::fs::remove_dir_all(&d1).ok();
+        std::fs::remove_dir_all(&d2).ok();
     }
 
     #[test]

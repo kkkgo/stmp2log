@@ -19,6 +19,8 @@ pub struct Config {
 
     pub web_path: String,
 
+    pub web_url: String,
+
     pub push_url: String,
 
     pub stmp_hostname: String,
@@ -45,6 +47,7 @@ impl Default for Config {
             web_listen: None,
             web_pass: String::new(),
             web_path: DEFAULT_WEB_PATH.into(),
+            web_url: String::new(),
             push_url: String::new(),
             stmp_hostname: default_hostname(),
             stmp_user: String::new(),
@@ -62,7 +65,7 @@ impl Default for Config {
 
 pub const DEFAULT_RETRY_QUEUE: usize = 0;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     pub max_entries: usize,
     pub max_days: u32,
@@ -71,6 +74,9 @@ pub struct Settings {
 
     #[serde(default = "default_retry_queue")]
     pub retry_queue: usize,
+
+    #[serde(default)]
+    pub web_url: String,
 }
 
 fn default_retry_queue() -> usize {
@@ -97,8 +103,22 @@ impl Settings {
             ("keep_raw", bool_to_ini(self.keep_raw)),
             ("keep_attachments", bool_to_ini(self.keep_attachments)),
             ("retry_queue", self.retry_queue.to_string()),
+            ("web_url", self.web_url.clone()),
         ]
     }
+}
+
+pub fn normalize_web_url(value: &str) -> String {
+    let cut = value.find(['#', ';']).unwrap_or(value.len());
+    value[..cut].trim().trim_end_matches('/').to_string()
+}
+
+pub fn external_base(web_url: &str) -> String {
+    let mut url = normalize_web_url(web_url);
+    if !url.is_empty() && !url.contains("://") {
+        url.insert_str(0, "http://");
+    }
+    url
 }
 
 impl Config {
@@ -109,6 +129,7 @@ impl Config {
             keep_raw: self.keep_raw,
             keep_attachments: self.keep_attachments,
             retry_queue: self.retry_queue,
+            web_url: self.web_url.clone(),
         }
     }
 }
@@ -198,6 +219,7 @@ pub fn parse(text: &str) -> Parsed {
                     value.to_string()
                 };
             }
+            "web_url" => cfg.web_url = normalize_web_url(value),
             "push_url" => cfg.push_url = value.trim_end_matches('/').to_string(),
             "stmp_hostname" => {
                 if !value.is_empty() {
@@ -618,6 +640,37 @@ mod tests {
     }
 
     #[test]
+    fn web_url_survives_a_trailing_slash_and_an_inline_comment() {
+        let p = parse("web_url=https://s2l.example.com/stmp2log/ # 手机上打得开的地址\n");
+        assert_eq!(p.config.web_url, "https://s2l.example.com/stmp2log");
+        assert!(
+            p.warnings.is_empty(),
+            "a documented key that warns sends people looking for a typo: {:?}",
+            p.warnings
+        );
+    }
+
+    #[test]
+    fn the_address_typed_in_the_web_ui_is_taken_as_written() {
+        assert_eq!(
+            external_base("https://example.com/mail"),
+            "https://example.com/mail"
+        );
+        assert_eq!(external_base("http://nas.lan:8025"), "http://nas.lan:8025");
+
+        assert_eq!(external_base("nas.lan:8025"), "http://nas.lan:8025");
+        assert_eq!(
+            external_base("https://s2l.example.com/"),
+            "https://s2l.example.com"
+        );
+
+        assert_eq!(
+            external_base("http://10.0.0.2:8025/stmp2log/#/?id=7"),
+            "http://10.0.0.2:8025/stmp2log"
+        );
+    }
+
+    #[test]
     fn maxsize_accepts_suffixes() {
         assert_eq!(
             parse("stmp_maxsize=1048576\n").config.stmp_maxsize,
@@ -696,6 +749,7 @@ mod tests {
             keep_raw: true,
             keep_attachments: true,
             retry_queue: 42,
+            web_url: "https://s2l.example.com/stmp2log".into(),
         };
         update(&p, &want.as_ini()).unwrap();
         let got = parse(&std::fs::read_to_string(&p).unwrap())

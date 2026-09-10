@@ -38,6 +38,8 @@ Configuration file (every key is optional; see the readme):
   web_listen=0.0.0.0:8025     web UI listener; empty disables the web UI
   web_pass=admin              web UI password; empty means no login at all
   web_path=stmp2log           web UI url prefix; empty means stmp2log
+  web_url=http://nas/s2l      address the links in notifications point at,
+                              path and all; empty means this machine's LAN address
   push_url=http://host/path   forward everything to another stmp2log
 
   stmp_tls_listen=0.0.0.0:465 implicit-TLS SMTP listener (STARTTLS always works)
@@ -52,7 +54,8 @@ Configuration file (every key is optional; see the readme):
   retry_queue=0               hold at most this many undelivered alerts while
                               the network is down and send them once it is
                               back; 0 (the default) means no limit
-    (these five can also be changed in the web UI, which writes them back here)
+    (these five and web_url can also be changed in the web UI, which writes
+     them back here)
 ";
 
 fn main() {
@@ -160,9 +163,17 @@ async fn serve(
     let (tx, rx) = tokio::sync::mpsc::channel::<s2l_smtp::Delivered>(256);
 
     let base = s2l_web::normalize_base(&cfg.web_path);
-    let base_url = match cfg.web_listen {
+
+    let console_url = match cfg.web_listen {
         Some(a) => format!("http://{}{}", advertised(a), base),
         None => String::new(),
+    };
+
+    let auto_url = auto_base(&cfg, &base);
+    let link_url = if cfg.web_url.is_empty() {
+        auto_url.clone()
+    } else {
+        config::external_base(&cfg.web_url)
     };
 
     let events = cfg
@@ -188,7 +199,7 @@ async fn serve(
         settings.clone(),
         s2l_notify::Client::new(Duration::from_secs(20)).with_trace(log::debug_enabled()),
         events.clone(),
-        base_url.clone(),
+        auto_url,
         push::Config {
             url: cfg.push_url.clone(),
             pass: cfg.web_pass.clone(),
@@ -219,7 +230,16 @@ async fn serve(
             events,
         )
         .await?;
-        log::info(&format!("web UI at {base_url}/"));
+        log::info(&format!("web UI at {console_url}/"));
+
+        if is_local_only(&link_url) {
+            log::warn(&format!(
+                "notification links point at {link_url}/, which only opens on this machine; \
+                 set the external address in the web UI (settings) or web_url in config.ini"
+            ));
+        } else if link_url != console_url {
+            log::info(&format!("notification links point at {link_url}/"));
+        }
         if cfg.web_pass.is_empty() {
             log::warn("web_pass is empty: the web UI is open to anyone who can reach it");
         }
@@ -285,10 +305,8 @@ async fn start_smtp(
         match s2l_smtp::load_compat_tls(&cfg.data, std::slice::from_ref(&cfg.stmp_hostname)) {
             Ok(c) => {
                 smtp.compat = Some(c);
-                log::info(
-                    "devices whose TLS is too old for rustls are served by the \
-                     compatibility stack",
-                );
+
+                log::debug("the compatibility TLS stack is ready");
             }
 
             Err(e) => log::warn(&format!("the compatibility TLS stack is unavailable: {e}")),
@@ -338,6 +356,42 @@ async fn start_web(
     s2l_web::serve(Arc::new(server))
         .await
         .map_err(|e| format!("could not start the web server: {e}"))
+}
+
+fn auto_base(cfg: &config::Config, base: &str) -> String {
+    let Some(listen) = cfg.web_listen else {
+        return String::new();
+    };
+
+    let host = if listen.ip().is_unspecified() {
+        let mut ip = primary_ip(listen.is_ipv6());
+        if ip.is_none() && listen.is_ipv6() {
+            ip = primary_ip(false);
+        }
+        ip.map(|ip| SocketAddr::new(ip, listen.port()).to_string())
+            .unwrap_or_else(|| advertised(listen))
+    } else {
+        advertised(listen)
+    };
+    format!("http://{host}{base}")
+}
+
+fn is_local_only(url: &str) -> bool {
+    let host = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let host = host.split('/').next().unwrap_or_default();
+    host.starts_with("127.") || host.starts_with("[::1]") || host.starts_with("localhost")
+}
+
+fn primary_ip(v6: bool) -> Option<std::net::IpAddr> {
+    let (bind, probe) = if v6 {
+        ("[::]:0", "[2001:4860:4860::8888]:53")
+    } else {
+        ("0.0.0.0:0", "1.1.1.1:53")
+    };
+    let sock = std::net::UdpSocket::bind(bind).ok()?;
+    sock.connect(probe).ok()?;
+    let ip = sock.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
 }
 
 fn advertised(listen: SocketAddr) -> String {
@@ -398,6 +452,65 @@ mod tests {
         assert_eq!(a("[::]:8025"), "[::1]:8025");
         assert_eq!(a("10.0.0.2:8025"), "10.0.0.2:8025");
         assert_eq!(a("[fd00::1]:8025"), "[fd00::1]:8025");
+    }
+
+    #[test]
+    fn a_disabled_web_ui_gets_no_link_at_all() {
+        let cfg = config::Config {
+            web_url: "https://example.com/stmp2log".into(),
+            ..Default::default()
+        };
+        assert!(
+            auto_base(&cfg, "/stmp2log").is_empty(),
+            "there is no web UI on this node, so every link into it would 404"
+        );
+    }
+
+    #[test]
+    fn a_link_uses_the_bound_address_as_is() {
+        let cfg = config::Config {
+            web_listen: Some("10.0.0.2:8025".parse().unwrap()),
+            ..Default::default()
+        };
+        assert_eq!(
+            auto_base(&cfg, "/stmp2log"),
+            "http://10.0.0.2:8025/stmp2log"
+        );
+    }
+
+    #[test]
+    fn a_wildcard_listen_never_leaks_into_the_link() {
+        let cfg = config::Config {
+            web_listen: Some("0.0.0.0:8025".parse().unwrap()),
+            ..Default::default()
+        };
+
+        let url = auto_base(&cfg, "/stmp2log");
+        assert!(!url.contains("0.0.0.0"), "0.0.0.0 opens nothing: {url}");
+        assert!(
+            url.ends_with("/stmp2log"),
+            "the web path is part of the link: {url}"
+        );
+    }
+
+    #[test]
+    fn a_link_only_this_machine_can_open_is_recognised() {
+        for u in [
+            "http://127.0.0.1:8025/stmp2log",
+            "http://[::1]:8025/x",
+            "http://localhost:8025",
+        ] {
+            assert!(is_local_only(u), "a phone cannot open {u}");
+        }
+        for u in [
+            "http://192.168.1.10:8025/stmp2log",
+            "https://s2l.example.com/stmp2log",
+        ] {
+            assert!(
+                !is_local_only(u),
+                "{u} is reachable, warning about it is noise"
+            );
+        }
     }
 
     #[test]

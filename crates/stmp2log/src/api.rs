@@ -298,15 +298,17 @@ impl Handler {
     }
 
     async fn put_settings(&self, req: &ApiReq) -> Reply {
-        let Ok(want) = req.json::<Settings>() else {
+        let Ok(mut want) = req.json::<Settings>() else {
             return respond::error(
                 400,
-                "expected {max_entries, max_days, keep_raw, keep_attachments, retry_queue}",
+                "expected {max_entries, max_days, keep_raw, keep_attachments, retry_queue, web_url}",
             );
         };
         if want.max_entries == 0 {
             return respond::error(400, "max_entries must be at least 1");
         }
+
+        want.web_url = config::normalize_web_url(&want.web_url);
         if let Err(e) = config::update(&self.config_path, &want.as_ini()) {
             log::error(&format!(
                 "could not write {}: {e}",
@@ -314,17 +316,19 @@ impl Handler {
             ));
             return respond::error(500, &format!("could not save the configuration: {e}"));
         }
+        let retry_queue = want.retry_queue;
+        let retention = want.retention();
+        let saved = json_of(&want);
         self.settings.store(Arc::new(want));
         log::info(&format!("settings saved to {}", self.config_path.display()));
 
-        self.pipeline.trim_retry(want.retry_queue);
+        self.pipeline.trim_retry(retry_queue);
 
         let store = self.store.clone();
-        let retention = want.retention();
         if let Ok(Err(e)) = blocking(move || store.set_retention(retention)).await {
             return respond::error(500, &e.to_string());
         }
-        respond::ok(&json_of(&want))
+        respond::ok(&saved)
     }
 
     async fn attachment(&self, id: &str, index: &str) -> Reply {
